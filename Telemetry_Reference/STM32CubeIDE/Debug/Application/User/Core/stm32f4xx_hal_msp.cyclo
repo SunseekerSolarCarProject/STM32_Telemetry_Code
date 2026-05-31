@@ -1,0 +1,9 @@
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:63:6:HAL_MspInit	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:86:6:HAL_CAN_MspInit	2
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:123:6:HAL_CAN_MspDeInit	2
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:152:6:HAL_I2C_MspInit	3
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:212:6:HAL_I2C_MspDeInit	3
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:263:6:HAL_SPI_MspInit	5
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:383:6:HAL_SPI_MspDeInit	5
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:472:6:HAL_UART_MspInit	2
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:509:6:HAL_UART_MspDeInit	2
