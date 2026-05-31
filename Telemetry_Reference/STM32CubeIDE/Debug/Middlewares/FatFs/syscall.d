@@ -1,7 +1,7 @@
 Middlewares/FatFs/syscall.o: \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/syscall.c \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../ff.h \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../integer.h \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/syscall.c \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../ff.h \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../integer.h \
  ../../FATFS/Target/ffconf.h ../../Core/Inc/main.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h \
  ../../Core/Inc/stm32f4xx_hal_conf.h \
@@ -33,8 +33,8 @@ Middlewares/FatFs/syscall.o: \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_spi.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../ff.h:
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../integer.h:
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../ff.h:
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Middlewares/Third_Party/FatFs/src/option/../integer.h:
 ../../FATFS/Target/ffconf.h:
 ../../Core/Inc/main.h:
 ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h:

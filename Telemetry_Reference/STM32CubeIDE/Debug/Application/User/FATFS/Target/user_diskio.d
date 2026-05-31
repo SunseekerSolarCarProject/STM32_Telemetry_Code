@@ -1,5 +1,5 @@
 Application/User/FATFS/Target/user_diskio.o: \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/FATFS/Target/user_diskio.c \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/FATFS/Target/user_diskio.c \
  ../../Middlewares/Third_Party/FatFs/src/ff_gen_drv.h \
  ../../Middlewares/Third_Party/FatFs/src/diskio.h \
  ../../Middlewares/Third_Party/FatFs/src/integer.h \

@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/unistd.h>
 #include "bmi270.h"
 
 #define BME280_FLOAT_ENABLE
@@ -146,7 +147,7 @@ typedef struct
 #define PCF8523_REG_WEEKDAYS        0x07
 #define PCF8523_REG_MONTHS          0x08
 #define PCF8523_REG_YEARS           0x09
-#define SET_ADALOGGER_RTC_ON_BOOT  1
+#define SET_ADALOGGER_RTC_ON_BOOT  0
 //IMU calibration defines
 #define GRAVITY_MPS2        	  	 9.80665f
 #define ACC_1G_MG                    1000
@@ -167,6 +168,9 @@ typedef struct
 #define ESP32_SPI_TIMEOUT_MS     100
 #define ESP32_SEND_PERIOD_MS     1000
 #define ESP32_READY_ACTIVE       GPIO_PIN_SET
+#define ESP32_RX_FRAME_LEN       ESP32_TX_FRAME_LEN
+#define ESP32_RESPONSE_LEN       160
+#define ESP32_CMD_LEN            160
 //uart sending data
 #define SUN_RAW_LINE_LEN        64
 #define SUN_RAW_BLOCK_LEN       4096
@@ -280,6 +284,12 @@ static float latest_imu_mph = 0.0f;
 
 static uint32_t esp32_seq = 0;
 static uint8_t esp32_tx_frame[ESP32_TX_FRAME_LEN];
+static uint8_t esp32_rx_frame[ESP32_RX_FRAME_LEN];
+
+static char esp32_response[ESP32_RESPONSE_LEN];
+static uint8_t esp32_response_pending = 0;
+
+static uint8_t sd_logging_enabled = 1;
 
 static uint8_t adalogger_rtc_ok = 0;
 
@@ -374,9 +384,23 @@ static void ESP32_Select(void);
 static void ESP32_Deselect(void);
 static uint8_t ESP32_IsReady(void);
 static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data);
+static void ESP32_ProcessRxFrame(const uint8_t *rx, size_t len);
+static void ESP32_HandleCommand(char *cmd);
+static void ESP32_ExecuteCommand(const char *id, const char *verb);
+static void ESP32_QueueResponse(const char *id,
+                                const char *status,
+                                const char *message);
+
+static void SD_LogStart(void);
+static void SD_LogStop(void);
+
+static uint8_t DateTime_IsValid(const DateTime_t *dt);
+static uint8_t DateTime_CalcWeekday(uint16_t year, uint8_t month, uint8_t day);
+
 static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
                                   char *line,
                                   size_t line_size);
+
 
 static uint8_t ADALOGGER_RTC_Init(void);
 static uint8_t ADALOGGER_RTC_Read(DateTime_t *dt);
@@ -413,6 +437,48 @@ static void StatusLed_BootSequence(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void SWV_SendChar(char ch)
+{
+  if ((CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk) == 0U)
+  {
+    return;
+  }
+
+  if ((ITM->TCR & ITM_TCR_ITMENA_Msk) == 0U)
+  {
+    return;
+  }
+
+  if ((ITM->TER & 1UL) == 0U)
+  {
+    return;
+  }
+
+  uint32_t timeout = 10000U;
+
+  while ((ITM->PORT[0].u32 == 0UL) && (timeout > 0U))
+  {
+    timeout--;
+  }
+
+  if (timeout > 0U)
+  {
+    ITM->PORT[0].u8 = (uint8_t)ch;
+  }
+}
+
+int _write(int file, char *ptr, int len)
+{
+  (void)file;
+
+  for (int i = 0; i < len; i++)
+  {
+    SWV_SendChar(ptr[i]);
+  }
+
+  return len;
+}
+
 static void Print_StartupSummary(int8_t bmi_result)
 {
   printf("\r\n================ SYSTEM INIT SUMMARY ================\r\n");
@@ -941,10 +1007,10 @@ static void SD_LogInit(void)
 
 static void SD_LogIMUAndGPS(struct bmi2_sens_data *sensor_data)
 {
-	if (!sd_ready)
-	  {
-	    return;
-	  }
+	if (!sd_ready || !sd_logging_enabled)
+	{
+	  return;
+	}
 
 	  char line[TELEMETRY_LINE_LEN];
 
@@ -968,6 +1034,36 @@ static void SD_LogIMUAndGPS(struct bmi2_sens_data *sensor_data)
 	      StatusLed_SetError();
 	    }
 	  }
+}
+
+static void SD_LogStart(void)
+{
+  if (!sd_ready)
+  {
+    SD_LogInit();
+  }
+
+  if (sd_ready)
+  {
+    sd_logging_enabled = 1;
+    printf("SD logging started\r\n");
+  }
+  else
+  {
+    printf("SD logging start failed: SD not ready\r\n");
+  }
+}
+
+static void SD_LogStop(void)
+{
+  sd_logging_enabled = 0;
+
+  if (sd_ready)
+  {
+    f_sync(&log_file);
+  }
+
+  printf("SD logging stopped\r\n");
 }
 
 static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
@@ -1081,43 +1177,421 @@ static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
 
   char line[TELEMETRY_LINE_LEN];
 
-  int len = Telemetry_BuildCSVLine(sensor_data, line, sizeof(line));
-
-  if (len <= 0)
-  {
-    return;
-  }
-
   memset(esp32_tx_frame, 0, sizeof(esp32_tx_frame));
+  memset(esp32_rx_frame, 0, sizeof(esp32_rx_frame));
 
   /*
-   * Add a simple prefix so the ESP32 knows this is a telemetry log row.
-   * The ESP32 can strip "$LOG," or forward the whole thing over BLE.
+   * If STM32 owes the ESP32/Desktop a command response,
+   * send that first. Otherwise send normal telemetry.
    */
-  snprintf((char *)esp32_tx_frame,
-           sizeof(esp32_tx_frame),
-           "$LOG,%lu,%s",
-           (unsigned long)esp32_seq++,
-           line);
+  if (esp32_response_pending)
+  {
+    snprintf((char *)esp32_tx_frame,
+             sizeof(esp32_tx_frame),
+             "%s",
+             esp32_response);
+
+    esp32_response_pending = 0;
+  }
+  else
+  {
+    int len = Telemetry_BuildCSVLine(sensor_data, line, sizeof(line));
+
+    if (len <= 0)
+    {
+      return;
+    }
+
+    snprintf((char *)esp32_tx_frame,
+             sizeof(esp32_tx_frame),
+             "$LOG,%lu,%s",
+             (unsigned long)esp32_seq++,
+             line);
+  }
 
   ESP32_Select();
 
-  HAL_StatusTypeDef status = HAL_SPI_Transmit(&hspi3,
-                                              esp32_tx_frame,
-                                              ESP32_TX_FRAME_LEN,
-                                              ESP32_SPI_TIMEOUT_MS);
+  HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(&hspi3,
+                                                     esp32_tx_frame,
+                                                     esp32_rx_frame,
+                                                     ESP32_TX_FRAME_LEN,
+                                                     ESP32_SPI_TIMEOUT_MS);
 
   ESP32_Deselect();
 
   if (status == HAL_OK)
   {
     StatusLed_RequestPulse(STATUS_ESP32_TX);
+
+    /*
+     * Process any command the ESP32 returned on MISO.
+     */
+    ESP32_ProcessRxFrame(esp32_rx_frame, sizeof(esp32_rx_frame));
   }
   else
   {
-    printf("ESP32 SPI transmit failed\r\n");
+    printf("ESP32 SPI transmit/receive failed\r\n");
     StatusLed_SetError();
   }
+}
+
+static void ESP32_QueueResponse(const char *id,
+                                const char *status,
+                                const char *message)
+{
+  if (id == NULL)
+  {
+    id = "0";
+  }
+
+  if (status == NULL)
+  {
+    status = "ERR";
+  }
+
+  if (message == NULL)
+  {
+    message = "NO_MESSAGE";
+  }
+
+  snprintf(esp32_response,
+           sizeof(esp32_response),
+           "$RSP,%s,%s,%s\r\n",
+           id,
+           status,
+           message);
+
+  esp32_response_pending = 1;
+}
+
+static uint8_t DateTime_IsValid(const DateTime_t *dt)
+{
+  if (dt == NULL)
+  {
+    return 0;
+  }
+
+  if ((dt->year < 2000U) || (dt->year > 2099U)) return 0;
+  if ((dt->month < 1U) || (dt->month > 12U)) return 0;
+  if ((dt->day < 1U) || (dt->day > 31U)) return 0;
+  if (dt->hour > 23U) return 0;
+  if (dt->minute > 59U) return 0;
+  if (dt->second > 59U) return 0;
+
+  return 1;
+}
+
+/*
+ * Returns weekday using 0 = Sunday, 1 = Monday, ..., 6 = Saturday.
+ */
+static uint8_t DateTime_CalcWeekday(uint16_t year, uint8_t month, uint8_t day)
+{
+  static const uint8_t table[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+
+  if (month < 3U)
+  {
+    year--;
+  }
+
+  return (uint8_t)((year + year / 4U - year / 100U + year / 400U +
+                    table[month - 1U] + day) % 7U);
+}
+
+static void ESP32_ProcessRxFrame(const uint8_t *rx, size_t len)
+{
+  char cmd[ESP32_CMD_LEN];
+  size_t pos = 0;
+
+  if (rx == NULL)
+  {
+    return;
+  }
+
+  memset(cmd, 0, sizeof(cmd));
+
+  /*
+   * Extract first printable ASCII command from the RX frame.
+   * Ignores 0x00 and 0xFF padding.
+   */
+  for (size_t i = 0; i < len && pos < (sizeof(cmd) - 1U); i++)
+  {
+    uint8_t c = rx[i];
+
+    if ((c == 0x00U) || (c == 0xFFU))
+    {
+      if (pos > 0U)
+      {
+        break;
+      }
+
+      continue;
+    }
+
+    if ((c == '\r') || (c == '\n'))
+    {
+      break;
+    }
+
+    if ((c >= 32U) && (c <= 126U))
+    {
+      cmd[pos++] = (char)c;
+    }
+  }
+
+  cmd[pos] = '\0';
+
+  if (pos == 0U)
+  {
+    return;
+  }
+
+  printf("ESP32 CMD RX: %s\r\n", cmd);
+
+  ESP32_HandleCommand(cmd);
+}
+
+static void ESP32_HandleCommand(char *cmd)
+{
+  char *p;
+
+  if (cmd == NULL)
+  {
+    return;
+  }
+
+  p = cmd;
+
+  if (*p == '$')
+  {
+    p++;
+  }
+
+  /*
+   * ESP_ACK means the SPI return path is alive,
+   * but it is not a command for STM32 to execute.
+   */
+  if (strncmp(p, "ESP_ACK", 7) == 0)
+  {
+    printf("ESP32 ACK ignored: %s\r\n", p);
+    return;
+  }
+
+  /*
+   * Format:
+   * CMD,42,SET_RTC,2026-05-31,16:02:18
+   */
+  if (strncmp(p, "CMD,", 4) == 0)
+  {
+    char *id;
+    char *verb;
+    char *comma;
+
+    p += 4;
+
+    id = p;
+    comma = strchr(id, ',');
+
+    if (comma == NULL)
+    {
+      ESP32_QueueResponse("0", "ERR", "BAD_CMD_FORMAT");
+      return;
+    }
+
+    *comma = '\0';
+    verb = comma + 1;
+
+    ESP32_ExecuteCommand(id, verb);
+    return;
+  }
+
+  /*
+   * Format:
+   * ESP_CMD,seq=44,cmd="SET_RTC,2026-05-31,16:02:18",...
+   */
+  if (strncmp(p, "ESP_CMD", 7) == 0)
+  {
+    char id_buf[16] = "0";
+    char verb_buf[ESP32_CMD_LEN];
+    char *seq_field;
+    char *cmd_field;
+    char *src;
+    size_t i = 0;
+
+    memset(verb_buf, 0, sizeof(verb_buf));
+
+    seq_field = strstr(p, "seq=");
+    if (seq_field != NULL)
+    {
+      unsigned int seq = 0;
+
+      if (sscanf(seq_field, "seq=%u", &seq) == 1)
+      {
+        snprintf(id_buf, sizeof(id_buf), "%u", seq);
+      }
+    }
+
+    cmd_field = strstr(p, "cmd=\"");
+    if (cmd_field != NULL)
+    {
+      src = cmd_field + 5;
+
+      while (src[i] != '\0' &&
+             src[i] != '"' &&
+             i < sizeof(verb_buf) - 1U)
+      {
+        verb_buf[i] = src[i];
+        i++;
+      }
+
+      verb_buf[i] = '\0';
+
+      printf("ESP32 ESP_CMD parsed: id=%s cmd=%s\r\n", id_buf, verb_buf);
+      ESP32_ExecuteCommand(id_buf, verb_buf);
+      return;
+    }
+
+    cmd_field = strstr(p, "cmd=");
+    if (cmd_field != NULL)
+    {
+      src = cmd_field + 4;
+
+      while (src[i] != '\0' &&
+             src[i] != '\r' &&
+             src[i] != '\n' &&
+             i < sizeof(verb_buf) - 1U)
+      {
+        verb_buf[i] = src[i];
+        i++;
+      }
+
+      verb_buf[i] = '\0';
+
+      printf("ESP32 ESP_CMD parsed: id=%s cmd=%s\r\n", id_buf, verb_buf);
+      ESP32_ExecuteCommand(id_buf, verb_buf);
+      return;
+    }
+
+    printf("ESP_CMD missing cmd field: %s\r\n", p);
+    ESP32_QueueResponse(id_buf, "ERR", "ESP_CMD_MISSING_CMD");
+    return;
+  }
+
+  /*
+   * Direct command format:
+   * SET_RTC,2026-05-31,16:02:18
+   * START_LOG
+   * STOP_LOG
+   */
+  if ((strncmp(p, "SET_RTC,", 8) == 0) ||
+      (strncmp(p, "START_LOG", 9) == 0) ||
+      (strncmp(p, "STOP_LOG", 8) == 0))
+  {
+    ESP32_ExecuteCommand("0", p);
+    return;
+  }
+
+  printf("ESP32 RX ignored unknown frame: %s\r\n", p);
+}
+
+static void ESP32_ExecuteCommand(const char *id, const char *verb)
+{
+  if ((id == NULL) || (verb == NULL))
+  {
+    return;
+  }
+
+  if (strncmp(verb, "START_LOG", 9) == 0)
+  {
+    SD_LogStart();
+
+    if (sd_ready && sd_logging_enabled)
+    {
+      ESP32_QueueResponse(id, "OK", "LOG_STARTED");
+    }
+    else
+    {
+      ESP32_QueueResponse(id, "ERR", "SD_NOT_READY");
+    }
+
+    return;
+  }
+
+  if (strncmp(verb, "STOP_LOG", 8) == 0)
+  {
+    SD_LogStop();
+    ESP32_QueueResponse(id, "OK", "LOG_STOPPED");
+    return;
+  }
+
+  if (strncmp(verb, "SET_RTC,", 8) == 0)
+  {
+    unsigned int year;
+    unsigned int month;
+    unsigned int day;
+    unsigned int hour;
+    unsigned int minute;
+    unsigned int second;
+    DateTime_t dt = {0};
+
+    if (sscanf(verb + 8,
+               "%u-%u-%u,%u:%u:%u",
+               &year,
+               &month,
+               &day,
+               &hour,
+               &minute,
+               &second) != 6)
+    {
+      printf("SET_RTC parse failed: %s\r\n", verb);
+      ESP32_QueueResponse(id, "ERR", "BAD_RTC_FORMAT");
+      return;
+    }
+
+    dt.year = (uint16_t)year;
+    dt.month = (uint8_t)month;
+    dt.day = (uint8_t)day;
+    dt.hour = (uint8_t)hour;
+    dt.minute = (uint8_t)minute;
+    dt.second = (uint8_t)second;
+    dt.weekday = DateTime_CalcWeekday(dt.year, dt.month, dt.day);
+    dt.valid = 1;
+
+    printf("SET_RTC requested: %04u-%02u-%02u %02u:%02u:%02u\r\n",
+           dt.year,
+           dt.month,
+           dt.day,
+           dt.hour,
+           dt.minute,
+           dt.second);
+
+    if (!DateTime_IsValid(&dt))
+    {
+      ESP32_QueueResponse(id, "ERR", "RTC_RANGE_INVALID");
+      return;
+    }
+
+    if (!adalogger_rtc_ok)
+    {
+      printf("SET_RTC failed: RTC not ready\r\n");
+      ESP32_QueueResponse(id, "ERR", "RTC_NOT_READY");
+      return;
+    }
+
+    if (ADALOGGER_RTC_Set(&dt))
+    {
+      ADALOGGER_RTC_Print();
+      ESP32_QueueResponse(id, "OK", "RTC_SET");
+    }
+    else
+    {
+      ESP32_QueueResponse(id, "ERR", "RTC_SET_FAILED");
+    }
+
+    return;
+  }
+
+  printf("Unknown ESP32 command verb: %s\r\n", verb);
+  ESP32_QueueResponse(id, "ERR", "UNKNOWN_CMD");
 }
 
 static uint8_t bcd_to_bin(uint8_t bcd)
@@ -1650,20 +2124,37 @@ static int SunRaw_BuildBlock(char *out, size_t out_len)
 {
   size_t pos = 0;
   DateTime_t dt = {0};
-  char time_text[16] = "00:00:00";
+  char time_text[40] = "RTC_READ_FAIL";
 
   if ((out == NULL) || (out_len == 0))
   {
     return -1;
   }
 
-  if (ADALOGGER_RTC_Read(&dt))
+  if (adalogger_rtc_ok && ADALOGGER_RTC_Read(&dt))
   {
-    snprintf(time_text, sizeof(time_text),
-             "%02u:%02u:%02u",
-             dt.hour,
-             dt.minute,
-             dt.second);
+    if (dt.valid)
+    {
+      snprintf(time_text, sizeof(time_text),
+               "%04u-%02u-%02uT%02u:%02u:%02u",
+               dt.year,
+               dt.month,
+               dt.day,
+               dt.hour,
+               dt.minute,
+               dt.second);
+    }
+    else
+    {
+      snprintf(time_text, sizeof(time_text),
+               "%04u-%02u-%02uT%02u:%02u:%02u_INVALID",
+               dt.year,
+               dt.month,
+               dt.day,
+               dt.hour,
+               dt.minute,
+               dt.second);
+    }
   }
 
   int written = snprintf(&out[pos], out_len - pos,

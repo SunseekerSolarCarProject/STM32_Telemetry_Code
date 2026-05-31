@@ -8,9 +8,9 @@ C_SRCS += \
 ../Application/User/Core/bme280.c \
 ../Application/User/Core/bmi2.c \
 ../Application/User/Core/bmi270.c \
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/main.c \
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c \
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_it.c \
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/main.c \
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c \
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_it.c \
 ../Application/User/Core/syscalls.c \
 ../Application/User/Core/sysmem.c 
 
@@ -38,11 +38,11 @@ C_DEPS += \
 # Each subdirectory must supply rules for building sources it contributes
 Application/User/Core/%.o Application/User/Core/%.su Application/User/Core/%.cyclo: ../Application/User/Core/%.c Application/User/Core/subdir.mk
 	arm-none-eabi-gcc "$<" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32F429xx -c -I../../FATFS/Target -I../../FATFS/App -I../../Core/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I../../Middlewares/Third_Party/FatFs/src -I../../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I../../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
-Application/User/Core/main.o: C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/main.c Application/User/Core/subdir.mk
+Application/User/Core/main.o: E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/main.c Application/User/Core/subdir.mk
 	arm-none-eabi-gcc "$<" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32F429xx -c -I../../FATFS/Target -I../../FATFS/App -I../../Core/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I../../Middlewares/Third_Party/FatFs/src -I../../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I../../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
-Application/User/Core/stm32f4xx_hal_msp.o: C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c Application/User/Core/subdir.mk
+Application/User/Core/stm32f4xx_hal_msp.o: E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c Application/User/Core/subdir.mk
 	arm-none-eabi-gcc "$<" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32F429xx -c -I../../FATFS/Target -I../../FATFS/App -I../../Core/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I../../Middlewares/Third_Party/FatFs/src -I../../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I../../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
-Application/User/Core/stm32f4xx_it.o: C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_it.c Application/User/Core/subdir.mk
+Application/User/Core/stm32f4xx_it.o: E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_it.c Application/User/Core/subdir.mk
 	arm-none-eabi-gcc "$<" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32F429xx -c -I../../FATFS/Target -I../../FATFS/App -I../../Core/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc -I../../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I../../Middlewares/Third_Party/FatFs/src -I../../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I../../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
 
 clean: clean-Application-2f-User-2f-Core

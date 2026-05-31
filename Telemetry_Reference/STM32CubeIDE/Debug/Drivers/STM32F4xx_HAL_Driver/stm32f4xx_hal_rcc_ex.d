@@ -1,5 +1,5 @@
 Drivers/STM32F4xx_HAL_Driver/stm32f4xx_hal_rcc_ex.o: \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h \
  ../../Core/Inc/stm32f4xx_hal_conf.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_rcc.h \

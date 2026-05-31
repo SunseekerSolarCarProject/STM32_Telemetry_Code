@@ -1,5 +1,5 @@
 Drivers/CMSIS/system_stm32f4xx.o: \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/system_stm32f4xx.c \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/system_stm32f4xx.c \
  ../../Drivers/CMSIS/Device/ST/STM32F4xx/Include/stm32f4xx.h \
  ../../Drivers/CMSIS/Device/ST/STM32F4xx/Include/stm32f429xx.h \
  ../../Drivers/CMSIS/Include/core_cm4.h \

@@ -1,6 +1,6 @@
 Application/User/FATFS/App/fatfs.o: \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/FATFS/App/fatfs.c \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/FATFS/App/fatfs.h \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/FATFS/App/fatfs.c \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/FATFS/App/fatfs.h \
  ../../Middlewares/Third_Party/FatFs/src/ff.h \
  ../../Middlewares/Third_Party/FatFs/src/integer.h \
  ../../FATFS/Target/ffconf.h ../../Core/Inc/main.h \
@@ -38,7 +38,7 @@ Application/User/FATFS/App/fatfs.o: \
  ../../Middlewares/Third_Party/FatFs/src/diskio.h \
  ../../Middlewares/Third_Party/FatFs/src/ff.h \
  ../../FATFS/Target/user_diskio.h
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/FATFS/App/fatfs.h:
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/FATFS/App/fatfs.h:
 ../../Middlewares/Third_Party/FatFs/src/ff.h:
 ../../Middlewares/Third_Party/FatFs/src/integer.h:
 ../../FATFS/Target/ffconf.h:

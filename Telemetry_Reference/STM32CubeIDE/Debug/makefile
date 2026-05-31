@@ -64,8 +64,8 @@ all: main-build
 main-build: Telemetry_Reference.elf secondary-outputs
 
 # Tool invocations
-Telemetry_Reference.elf Telemetry_Reference.map: $(OBJS) $(USER_OBJS) C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\Telemetry_Reference\STM32CubeIDE\STM32F429ZITX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "Telemetry_Reference.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\Telemetry_Reference\STM32CubeIDE\STM32F429ZITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Telemetry_Reference.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Telemetry_Reference.elf Telemetry_Reference.map: $(OBJS) $(USER_OBJS) E:\Programming_Folder\Stm32\Telemetry_Board\Telemetry_Reference\STM32CubeIDE\STM32F429ZITX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "Telemetry_Reference.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"E:\Programming_Folder\Stm32\Telemetry_Board\Telemetry_Reference\STM32CubeIDE\STM32F429ZITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Telemetry_Reference.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

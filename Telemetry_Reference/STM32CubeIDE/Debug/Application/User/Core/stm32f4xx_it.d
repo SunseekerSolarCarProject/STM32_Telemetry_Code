@@ -1,5 +1,5 @@
 Application/User/Core/stm32f4xx_it.o: \
- C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/Core/Src/stm32f4xx_it.c \
+ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_it.c \
  ../../Core/Inc/main.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h \
  ../../Core/Inc/stm32f4xx_hal_conf.h \
