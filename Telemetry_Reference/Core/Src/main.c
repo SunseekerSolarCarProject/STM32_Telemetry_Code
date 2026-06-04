@@ -162,6 +162,7 @@ typedef struct
 //GPS data defines
 #define GPS_SPI_READ_LEN 	  64
 #define GPS_NMEA_BUF_LEN      128
+#define GPS_SPI_TIMEOUT_MS    50
 //Defines for the SPI com. for esp32
 #define ESP32_TX_FRAME_LEN       768
 #define TELEMETRY_LINE_LEN       640
@@ -171,6 +172,9 @@ typedef struct
 #define ESP32_RX_FRAME_LEN       ESP32_TX_FRAME_LEN
 #define ESP32_RESPONSE_LEN       160
 #define ESP32_CMD_LEN            160
+#define BME280_SPI_TIMEOUT_MS    100
+#define ADALOGGER_RTC_I2C_TIMEOUT_MS  100
+#define ADALOGGER_RTC_I2C_RETRIES     2
 //uart sending data
 #define SUN_RAW_LINE_LEN        64
 #define SUN_RAW_BLOCK_LEN       4096
@@ -274,6 +278,12 @@ static uint32_t last_velocity_tick = 0;
 static char gps_nmea_buf[GPS_NMEA_BUF_LEN];
 static uint16_t gps_nmea_index = 0;
 static uint8_t gps_sentence_active = 0;
+static uint8_t gps_spi_tx[GPS_SPI_READ_LEN];
+static uint8_t gps_spi_rx[GPS_SPI_READ_LEN];
+static volatile uint8_t gps_spi_busy = 0;
+static volatile uint8_t gps_spi_done = 0;
+static volatile uint8_t gps_spi_error = 0;
+static uint32_t gps_spi_start_ms = 0;
 
 static FATFS fs;
 static FIL log_file;
@@ -285,6 +295,10 @@ static float latest_imu_mph = 0.0f;
 static uint32_t esp32_seq = 0;
 static uint8_t esp32_tx_frame[ESP32_TX_FRAME_LEN];
 static uint8_t esp32_rx_frame[ESP32_RX_FRAME_LEN];
+static volatile uint8_t esp32_spi_busy = 0;
+static volatile uint8_t esp32_spi_done = 0;
+static volatile uint8_t esp32_spi_error = 0;
+static uint32_t esp32_spi_start_ms = 0;
 
 static char esp32_response[ESP32_RESPONSE_LEN];
 static uint8_t esp32_response_pending = 0;
@@ -295,6 +309,8 @@ static uint8_t adalogger_rtc_ok = 0;
 
 static struct bme280_dev bme280_dev;
 static uint8_t bme280_ok = 0;
+static volatile uint8_t bme280_spi_done = 0;
+static volatile uint8_t bme280_spi_error = 0;
 
 static float latest_bme_temp_c = 0.0f;
 static float latest_bme_pressure_pa = 0.0f;
@@ -376,14 +392,18 @@ static int32_t abs_i32(int32_t value);
 static void BMI270_InitGravityEstimate(void);
 static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data);
 
+static void GPS_Select(void);
+static void GPS_Deselect(void);
 static void GPS_InitPins(void);
 static void GPS_PollSPI(void);
+static void GPS_ServiceSPI(void);
 static void GPS_ProcessByte(uint8_t byte);
 
 static void ESP32_Select(void);
 static void ESP32_Deselect(void);
 static uint8_t ESP32_IsReady(void);
 static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data);
+static void ESP32_ServiceSPI(void);
 static void ESP32_ProcessRxFrame(const uint8_t *rx, size_t len);
 static void ESP32_HandleCommand(char *cmd);
 static void ESP32_ExecuteCommand(const char *id, const char *verb);
@@ -406,6 +426,7 @@ static uint8_t ADALOGGER_RTC_Init(void);
 static uint8_t ADALOGGER_RTC_Read(DateTime_t *dt);
 static uint8_t ADALOGGER_RTC_Set(const DateTime_t *dt);
 static void ADALOGGER_RTC_Print(void);
+static void ADALOGGER_RTC_RecoverI2CBus(const char *reason);
 
 static void DateTime_ToString(const DateTime_t *dt, char *out, size_t out_len);
 
@@ -479,6 +500,70 @@ int _write(int file, char *ptr, int len)
   return len;
 }
 
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI1)
+  {
+    GPS_Deselect();
+    gps_spi_error = 0;
+    gps_spi_busy = 0;
+    gps_spi_done = 1;
+  }
+  else if (hspi->Instance == SPI3)
+  {
+    ESP32_Deselect();
+    esp32_spi_error = 0;
+    esp32_spi_busy = 0;
+    esp32_spi_done = 1;
+  }
+  else if (hspi->Instance == SPI5)
+  {
+    bme280_spi_error = 0;
+    bme280_spi_done = 1;
+  }
+}
+
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI5)
+  {
+    bme280_spi_error = 0;
+    bme280_spi_done = 1;
+  }
+}
+
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI5)
+  {
+    bme280_spi_error = 0;
+    bme280_spi_done = 1;
+  }
+}
+
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI1)
+  {
+    GPS_Deselect();
+    gps_spi_error = 1;
+    gps_spi_busy = 0;
+    gps_spi_done = 1;
+  }
+  else if (hspi->Instance == SPI3)
+  {
+    ESP32_Deselect();
+    esp32_spi_error = 1;
+    esp32_spi_busy = 0;
+    esp32_spi_done = 1;
+  }
+  else if (hspi->Instance == SPI5)
+  {
+    bme280_spi_error = 1;
+    bme280_spi_done = 1;
+  }
+}
+
 static void Print_StartupSummary(int8_t bmi_result)
 {
   printf("\r\n================ SYSTEM INIT SUMMARY ================\r\n");
@@ -498,9 +583,9 @@ static void Print_StartupSummary(int8_t bmi_result)
   printf("BME280 SENSOR:     %s\r\n",
          bme280_ok ? "OK" : "FAILED");
 
-  printf("GPS SPI:           initialized, waiting for NMEA sentences\r\n");
+  printf("GPS SPI:           interrupt transfer mode, waiting for NMEA sentences\r\n");
 
-  printf("ESP32 SPI3:        ready-check based transmit enabled\r\n");
+  printf("ESP32 SPI3:        ready-check interrupt transmit/receive enabled\r\n");
 
   printf("=====================================================\r\n");
   printf("Starting repeated data loop...\r\n\r\n");
@@ -938,27 +1023,70 @@ static void GPS_ProcessByte(uint8_t byte)
 
 static void GPS_PollSPI(void)
 {
-  uint8_t tx[GPS_SPI_READ_LEN];
-  uint8_t rx[GPS_SPI_READ_LEN];
+  GPS_ServiceSPI();
 
-  memset(tx, 0xFF, sizeof(tx));
-  memset(rx, 0xFF, sizeof(rx));
+  if (gps_spi_busy)
+  {
+    return;
+  }
+
+  memset(gps_spi_tx, 0xFF, sizeof(gps_spi_tx));
+  memset(gps_spi_rx, 0xFF, sizeof(gps_spi_rx));
 
   GPS_Select();
+  gps_spi_done = 0;
+  gps_spi_error = 0;
+  gps_spi_busy = 1;
+  gps_spi_start_ms = HAL_GetTick();
 
-  if (HAL_SPI_TransmitReceive(&hspi1, tx, rx, GPS_SPI_READ_LEN, 100) == HAL_OK)
+  if (HAL_SPI_TransmitReceive_IT(&hspi1,
+                                 gps_spi_tx,
+                                 gps_spi_rx,
+                                 GPS_SPI_READ_LEN) != HAL_OK)
   {
     GPS_Deselect();
+    gps_spi_busy = 0;
+    gps_spi_done = 0;
+    printf("GPS SPI interrupt read start failed, HAL err=0x%08lX\r\n",
+           (unsigned long)HAL_SPI_GetError(&hspi1));
+    StatusLed_SetError();
+  }
+}
+
+static void GPS_ServiceSPI(void)
+{
+  if (gps_spi_done)
+  {
+    uint8_t had_error = gps_spi_error;
+
+    gps_spi_done = 0;
+    gps_spi_error = 0;
+
+    if (had_error)
+    {
+      printf("GPS SPI interrupt read failed, HAL err=0x%08lX\r\n",
+             (unsigned long)HAL_SPI_GetError(&hspi1));
+      StatusLed_SetError();
+      return;
+    }
 
     for (uint16_t i = 0; i < GPS_SPI_READ_LEN; i++)
     {
-      GPS_ProcessByte(rx[i]);
+      GPS_ProcessByte(gps_spi_rx[i]);
     }
   }
-  else
+
+  if (gps_spi_busy &&
+      ((HAL_GetTick() - gps_spi_start_ms) > GPS_SPI_TIMEOUT_MS))
   {
+    HAL_SPI_Abort(&hspi1);
     GPS_Deselect();
-    printf("GPS SPI read failed\r\n");
+    gps_spi_busy = 0;
+    gps_spi_done = 0;
+    gps_spi_error = 0;
+    printf("GPS SPI interrupt read timeout, HAL err=0x%08lX\r\n",
+           (unsigned long)HAL_SPI_GetError(&hspi1));
+    StatusLed_SetError();
   }
 }
 
@@ -1170,12 +1298,20 @@ static uint8_t ESP32_IsReady(void)
 
 static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
 {
+  ESP32_ServiceSPI();
+
+  if (esp32_spi_busy)
+  {
+    return;
+  }
+
   if (!ESP32_IsReady())
   {
     return;
   }
 
   char line[TELEMETRY_LINE_LEN];
+  uint8_t sending_response = 0;
 
   memset(esp32_tx_frame, 0, sizeof(esp32_tx_frame));
   memset(esp32_rx_frame, 0, sizeof(esp32_rx_frame));
@@ -1191,7 +1327,7 @@ static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
              "%s",
              esp32_response);
 
-    esp32_response_pending = 0;
+    sending_response = 1;
   }
   else
   {
@@ -1211,16 +1347,51 @@ static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
 
   ESP32_Select();
 
-  HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(&hspi3,
-                                                     esp32_tx_frame,
-                                                     esp32_rx_frame,
-                                                     ESP32_TX_FRAME_LEN,
-                                                     ESP32_SPI_TIMEOUT_MS);
+  esp32_spi_done = 0;
+  esp32_spi_error = 0;
+  esp32_spi_busy = 1;
+  esp32_spi_start_ms = HAL_GetTick();
 
-  ESP32_Deselect();
+  HAL_StatusTypeDef status = HAL_SPI_TransmitReceive_IT(&hspi3,
+                                                        esp32_tx_frame,
+                                                        esp32_rx_frame,
+                                                        ESP32_TX_FRAME_LEN);
 
   if (status == HAL_OK)
   {
+    if (sending_response)
+    {
+      esp32_response_pending = 0;
+    }
+  }
+  else
+  {
+    ESP32_Deselect();
+    esp32_spi_busy = 0;
+    esp32_spi_done = 0;
+    printf("ESP32 SPI interrupt transmit/receive start failed, HAL err=0x%08lX\r\n",
+           (unsigned long)HAL_SPI_GetError(&hspi3));
+    StatusLed_SetError();
+  }
+}
+
+static void ESP32_ServiceSPI(void)
+{
+  if (esp32_spi_done)
+  {
+    uint8_t had_error = esp32_spi_error;
+
+    esp32_spi_done = 0;
+    esp32_spi_error = 0;
+
+    if (had_error)
+    {
+      printf("ESP32 SPI interrupt transmit/receive failed, HAL err=0x%08lX\r\n",
+             (unsigned long)HAL_SPI_GetError(&hspi3));
+      StatusLed_SetError();
+      return;
+    }
+
     StatusLed_RequestPulse(STATUS_ESP32_TX);
 
     /*
@@ -1228,9 +1399,17 @@ static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
      */
     ESP32_ProcessRxFrame(esp32_rx_frame, sizeof(esp32_rx_frame));
   }
-  else
+
+  if (esp32_spi_busy &&
+      ((HAL_GetTick() - esp32_spi_start_ms) > ESP32_SPI_TIMEOUT_MS))
   {
-    printf("ESP32 SPI transmit/receive failed\r\n");
+    HAL_SPI_Abort(&hspi3);
+    ESP32_Deselect();
+    esp32_spi_busy = 0;
+    esp32_spi_done = 0;
+    esp32_spi_error = 0;
+    printf("ESP32 SPI interrupt transmit/receive timeout, HAL err=0x%08lX\r\n",
+           (unsigned long)HAL_SPI_GetError(&hspi3));
     StatusLed_SetError();
   }
 }
@@ -1639,30 +1818,117 @@ static void DateTime_ToString(const DateTime_t *dt, char *out, size_t out_len)
  * ADALOGGER_RTC / PCF8523
  * This reads the RTC chip on the Adalogger FeatherWing through I2C2.
  */
+static void ADALOGGER_RTC_RecoverI2CBus(const char *reason)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  printf("ADALOGGER_RTC: recovering I2C2 bus after %s, HAL err=0x%08lX\r\n",
+         (reason != NULL) ? reason : "I2C error",
+         (unsigned long)HAL_I2C_GetError(&hi2c2));
+
+  HAL_I2C_DeInit(&hi2c2);
+
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+
+  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+
+  HAL_GPIO_WritePin(GPIOF, GPIO_PIN_0 | GPIO_PIN_1, GPIO_PIN_SET);
+  HAL_Delay(1);
+
+  for (uint8_t i = 0; i < 9U; i++)
+  {
+    if (HAL_GPIO_ReadPin(GPIOF, GPIO_PIN_0) == GPIO_PIN_SET)
+    {
+      break;
+    }
+
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_1, GPIO_PIN_RESET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_1, GPIO_PIN_SET);
+    HAL_Delay(1);
+  }
+
+  /*
+   * STOP condition: SDA low while SCL high, then SDA high.
+   */
+  HAL_GPIO_WritePin(GPIOF, GPIO_PIN_0, GPIO_PIN_RESET);
+  HAL_Delay(1);
+  HAL_GPIO_WritePin(GPIOF, GPIO_PIN_1, GPIO_PIN_SET);
+  HAL_Delay(1);
+  HAL_GPIO_WritePin(GPIOF, GPIO_PIN_0, GPIO_PIN_SET);
+  HAL_Delay(1);
+
+  MX_I2C2_Init();
+}
+
 static HAL_StatusTypeDef ADALOGGER_RTC_ReadRegs(uint8_t reg,
                                                 uint8_t *data,
                                                 uint16_t len)
 {
-  return HAL_I2C_Mem_Read(&hi2c2,
-                          ADALOGGER_RTC_ADDR,
-                          reg,
-                          I2C_MEMADD_SIZE_8BIT,
-                          data,
-                          len,
-                          100);
+  HAL_StatusTypeDef status = HAL_ERROR;
+
+  for (uint8_t attempt = 0; attempt <= ADALOGGER_RTC_I2C_RETRIES; attempt++)
+  {
+    status = HAL_I2C_Mem_Read(&hi2c2,
+                              ADALOGGER_RTC_ADDR,
+                              reg,
+                              I2C_MEMADD_SIZE_8BIT,
+                              data,
+                              len,
+                              ADALOGGER_RTC_I2C_TIMEOUT_MS);
+
+    if (status == HAL_OK)
+    {
+      return HAL_OK;
+    }
+
+    printf("ADALOGGER_RTC: read reg 0x%02X failed, status=%d err=0x%08lX attempt=%u\r\n",
+           reg,
+           status,
+           (unsigned long)HAL_I2C_GetError(&hi2c2),
+           (unsigned int)(attempt + 1U));
+
+    ADALOGGER_RTC_RecoverI2CBus("read");
+  }
+
+  return status;
 }
 
 static HAL_StatusTypeDef ADALOGGER_RTC_WriteRegs(uint8_t reg,
                                                  uint8_t *data,
                                                  uint16_t len)
 {
-  return HAL_I2C_Mem_Write(&hi2c2,
-                           ADALOGGER_RTC_ADDR,
-                           reg,
-                           I2C_MEMADD_SIZE_8BIT,
-                           data,
-                           len,
-                           100);
+  HAL_StatusTypeDef status = HAL_ERROR;
+
+  for (uint8_t attempt = 0; attempt <= ADALOGGER_RTC_I2C_RETRIES; attempt++)
+  {
+    status = HAL_I2C_Mem_Write(&hi2c2,
+                               ADALOGGER_RTC_ADDR,
+                               reg,
+                               I2C_MEMADD_SIZE_8BIT,
+                               data,
+                               len,
+                               ADALOGGER_RTC_I2C_TIMEOUT_MS);
+
+    if (status == HAL_OK)
+    {
+      return HAL_OK;
+    }
+
+    printf("ADALOGGER_RTC: write reg 0x%02X failed, status=%d err=0x%08lX attempt=%u\r\n",
+           reg,
+           status,
+           (unsigned long)HAL_I2C_GetError(&hi2c2),
+           (unsigned int)(attempt + 1U));
+
+    ADALOGGER_RTC_RecoverI2CBus("write");
+  }
+
+  return status;
 }
 
 static HAL_StatusTypeDef ADALOGGER_RTC_WriteReg(uint8_t reg, uint8_t value)
@@ -1672,7 +1938,29 @@ static HAL_StatusTypeDef ADALOGGER_RTC_WriteReg(uint8_t reg, uint8_t value)
 
 static uint8_t ADALOGGER_RTC_Init(void)
 {
-  if (HAL_I2C_IsDeviceReady(&hi2c2, ADALOGGER_RTC_ADDR, 3, 100) != HAL_OK)
+  HAL_StatusTypeDef ready = HAL_ERROR;
+
+  for (uint8_t attempt = 0; attempt <= ADALOGGER_RTC_I2C_RETRIES; attempt++)
+  {
+    ready = HAL_I2C_IsDeviceReady(&hi2c2,
+                                  ADALOGGER_RTC_ADDR,
+                                  3,
+                                  ADALOGGER_RTC_I2C_TIMEOUT_MS);
+
+    if (ready == HAL_OK)
+    {
+      break;
+    }
+
+    printf("ADALOGGER_RTC: ready check failed, status=%d err=0x%08lX attempt=%u\r\n",
+           ready,
+           (unsigned long)HAL_I2C_GetError(&hi2c2),
+           (unsigned int)(attempt + 1U));
+
+    ADALOGGER_RTC_RecoverI2CBus("ready check");
+  }
+
+  if (ready != HAL_OK)
   {
     printf("ADALOGGER_RTC: PCF8523 not found on I2C2\r\n");
     return 0;
@@ -1769,6 +2057,58 @@ static void ADALOGGER_RTC_Print(void)
   }
 }
 
+static HAL_StatusTypeDef BME280_WaitForSPI5IT(uint32_t timeout_ms)
+{
+  uint32_t start = HAL_GetTick();
+
+  while (!bme280_spi_done)
+  {
+    if ((HAL_GetTick() - start) > timeout_ms)
+    {
+      HAL_SPI_Abort(&hspi5);
+      bme280_spi_error = 1;
+      return HAL_TIMEOUT;
+    }
+  }
+
+  if (bme280_spi_error)
+  {
+    return HAL_ERROR;
+  }
+
+  return HAL_OK;
+}
+
+static HAL_StatusTypeDef BME280_TransmitIT(uint8_t *data, uint16_t len)
+{
+  bme280_spi_done = 0;
+  bme280_spi_error = 0;
+
+  HAL_StatusTypeDef status = HAL_SPI_Transmit_IT(&hspi5, data, len);
+
+  if (status != HAL_OK)
+  {
+    return status;
+  }
+
+  return BME280_WaitForSPI5IT(BME280_SPI_TIMEOUT_MS);
+}
+
+static HAL_StatusTypeDef BME280_ReceiveIT(uint8_t *data, uint16_t len)
+{
+  bme280_spi_done = 0;
+  bme280_spi_error = 0;
+
+  HAL_StatusTypeDef status = HAL_SPI_Receive_IT(&hspi5, data, len);
+
+  if (status != HAL_OK)
+  {
+    return status;
+  }
+
+  return BME280_WaitForSPI5IT(BME280_SPI_TIMEOUT_MS);
+}
+
 static void BME280_Select(void)
 {
   HAL_GPIO_WritePin(BME_CS_GPIO_Port, BME_CS_Pin, GPIO_PIN_RESET);
@@ -1790,13 +2130,13 @@ static int8_t BME280_SPI_Read(uint8_t reg_addr,
 
   BME280_Select();
 
-  if (HAL_SPI_Transmit(&hspi5, &addr, 1, 100) != HAL_OK)
+  if (BME280_TransmitIT(&addr, 1) != HAL_OK)
   {
     BME280_Deselect();
     return BME280_E_COMM_FAIL;
   }
 
-  if (HAL_SPI_Receive(&hspi5, reg_data, (uint16_t)len, 100) != HAL_OK)
+  if (BME280_ReceiveIT(reg_data, (uint16_t)len) != HAL_OK)
   {
     BME280_Deselect();
     return BME280_E_COMM_FAIL;
@@ -1817,13 +2157,13 @@ static int8_t BME280_SPI_Write(uint8_t reg_addr,
 
   BME280_Select();
 
-  if (HAL_SPI_Transmit(&hspi5, &addr, 1, 100) != HAL_OK)
+  if (BME280_TransmitIT(&addr, 1) != HAL_OK)
   {
     BME280_Deselect();
     return BME280_E_COMM_FAIL;
   }
 
-  if (HAL_SPI_Transmit(&hspi5, (uint8_t *)reg_data, (uint16_t)len, 100) != HAL_OK)
+  if (BME280_TransmitIT((uint8_t *)reg_data, (uint16_t)len) != HAL_OK)
   {
     BME280_Deselect();
     return BME280_E_COMM_FAIL;
@@ -2636,6 +2976,9 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
+  	    GPS_ServiceSPI();
+  	    ESP32_ServiceSPI();
+
   	    /*
   	     * IMU + SD + ESP32 telemetry task
   	     * Runs once per second.
@@ -2755,7 +3098,7 @@ int main(void)
   	      /*
   	       * Optional SWV copy.
   	       */
-  	      printf("%s", sun_raw_block);
+  	      //printf("%s", sun_raw_block);
   	    }
 
   	    /*

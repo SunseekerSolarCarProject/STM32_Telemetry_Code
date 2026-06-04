@@ -285,6 +285,8 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* USER CODE BEGIN SPI1_MspInit 1 */
+    HAL_NVIC_SetPriority(SPI1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(SPI1_IRQn);
 
   /* USER CODE END SPI1_MspInit 1 */
   }
@@ -343,6 +345,8 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /* USER CODE BEGIN SPI3_MspInit 1 */
+    HAL_NVIC_SetPriority(SPI3_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(SPI3_IRQn);
 
   /* USER CODE END SPI3_MspInit 1 */
   }
@@ -368,6 +372,8 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
 
   /* USER CODE BEGIN SPI5_MspInit 1 */
+    HAL_NVIC_SetPriority(SPI5_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(SPI5_IRQn);
 
   /* USER CODE END SPI5_MspInit 1 */
   }
@@ -398,6 +404,7 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
 
   /* USER CODE BEGIN SPI1_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(SPI1_IRQn);
 
   /* USER CODE END SPI1_MspDeInit 1 */
   }
@@ -438,6 +445,7 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
     HAL_GPIO_DeInit(GPIOC, GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_12);
 
   /* USER CODE BEGIN SPI3_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(SPI3_IRQn);
 
   /* USER CODE END SPI3_MspDeInit 1 */
   }
@@ -457,6 +465,7 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* hspi)
     HAL_GPIO_DeInit(GPIOF, GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9);
 
   /* USER CODE BEGIN SPI5_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(SPI5_IRQn);
 
   /* USER CODE END SPI5_MspDeInit 1 */
   }

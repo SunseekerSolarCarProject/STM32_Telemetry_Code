@@ -4,6 +4,6 @@ E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4
 E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:152:6:HAL_I2C_MspInit	3
 E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:212:6:HAL_I2C_MspDeInit	3
 E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:263:6:HAL_SPI_MspInit	5
-E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:383:6:HAL_SPI_MspDeInit	5
-E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:472:6:HAL_UART_MspInit	2
-E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:509:6:HAL_UART_MspDeInit	2
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:389:6:HAL_SPI_MspDeInit	5
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:481:6:HAL_UART_MspInit	2
+E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/Core/Src/stm32f4xx_hal_msp.c:518:6:HAL_UART_MspDeInit	2
