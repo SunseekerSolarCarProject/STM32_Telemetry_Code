@@ -163,6 +163,9 @@ typedef struct
 #define GPS_SPI_READ_LEN 	  64
 #define GPS_NMEA_BUF_LEN      128
 #define GPS_SPI_TIMEOUT_MS    50
+#define GPS_SPEED_VALID_MS    3000
+#define KNOTS_TO_MPH          1.15077945f
+#define KMH_TO_MPH            0.62137119f
 //Defines for the SPI com. for esp32
 #define ESP32_TX_FRAME_LEN       768
 #define TELEMETRY_LINE_LEN       640
@@ -291,6 +294,11 @@ static uint8_t sd_ready = 0;
 
 static char latest_gps_sentence[GPS_NMEA_BUF_LEN];
 static float latest_imu_mph = 0.0f;
+static float latest_gps_speed_mph = 0.0f;
+static uint8_t latest_gps_speed_valid = 0;
+static uint32_t latest_gps_speed_ms = 0;
+static float latest_vehicle_speed_mph = 0.0f;
+static const char *latest_vehicle_speed_source = "NONE";
 
 static uint32_t esp32_seq = 0;
 static uint8_t esp32_tx_frame[ESP32_TX_FRAME_LEN];
@@ -398,6 +406,13 @@ static void GPS_InitPins(void);
 static void GPS_PollSPI(void);
 static void GPS_ServiceSPI(void);
 static void GPS_ProcessByte(uint8_t byte);
+static uint8_t GPS_GetField(const char *sentence,
+                            uint8_t field_index,
+                            char *out,
+                            size_t out_len);
+static uint8_t GPS_ParseSpeedMph(const char *sentence, float *speed_mph);
+static void GPS_UpdateSpeedFromSentence(const char *sentence);
+static void VehicleSpeed_UpdateFromSources(void);
 
 static void ESP32_Select(void);
 static void ESP32_Deselect(void);
@@ -909,18 +924,21 @@ static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data)
 
 	  int32_t speed_cmph = (int32_t)(demo_speed_mph * 100.0f);
 	  latest_imu_mph = demo_speed_mph;
+	  VehicleSpeed_UpdateFromSources();
 
 	  printf("ACC mg: X=%6ld Y=%6ld Z=%6ld | "
 	         "LIN mg: X=%6ld Y=%6ld Z=%6ld | "
 	         "LIN_MAG=%6ld mg | "
 	         "GYR mdps: X=%7ld Y=%7ld Z=%7ld | "
-	         "MPH=%ld.%02ld | %s\r\n",
+	         "IMU_MOTION_MPH=%ld.%02ld | VEHICLE_MPH=%.2f(%s) | %s\r\n",
 	         (long)ax_mg, (long)ay_mg, (long)az_mg,
 	         (long)lin_ax_mg, (long)lin_ay_mg, (long)lin_az_mg,
 	         (long)lin_acc_mag_mg,
 	         (long)gx_mdps, (long)gy_mdps, (long)gz_mdps,
 	         (long)(speed_cmph / 100),
 	         (long)abs_i32(speed_cmph % 100),
+	         (double)latest_vehicle_speed_mph,
+	         latest_vehicle_speed_source,
 	         moving ? "MOVING" : "STILL");
 }
 
@@ -1014,10 +1032,149 @@ static void GPS_ProcessByte(uint8_t byte)
 
 	  strncpy(latest_gps_sentence, gps_nmea_buf, GPS_NMEA_BUF_LEN - 1);
 	  latest_gps_sentence[GPS_NMEA_BUF_LEN - 1] = '\0';
+	  GPS_UpdateSpeedFromSentence(gps_nmea_buf);
 	  StatusLed_RequestPulse(STATUS_GPS_RX);
 
 	  gps_sentence_active = 0;
 	  gps_nmea_index = 0;
+  }
+}
+
+static uint8_t GPS_GetField(const char *sentence,
+                            uint8_t field_index,
+                            char *out,
+                            size_t out_len)
+{
+  uint8_t current_field = 0;
+  size_t out_pos = 0;
+
+  if ((sentence == NULL) || (out == NULL) || (out_len == 0))
+  {
+    return 0;
+  }
+
+  out[0] = '\0';
+
+  for (const char *p = sentence; *p != '\0'; p++)
+  {
+    char ch = *p;
+
+    if ((ch == ',') || (ch == '*') || (ch == '\r') || (ch == '\n'))
+    {
+      if (current_field == field_index)
+      {
+        out[out_pos] = '\0';
+        return 1;
+      }
+
+      current_field++;
+
+      if (ch != ',')
+      {
+        break;
+      }
+
+      continue;
+    }
+
+    if (current_field == field_index)
+    {
+      if (out_pos < (out_len - 1U))
+      {
+        out[out_pos++] = ch;
+      }
+    }
+  }
+
+  if (current_field == field_index)
+  {
+    out[out_pos] = '\0';
+    return 1;
+  }
+
+  return 0;
+}
+
+static uint8_t GPS_ParseSpeedMph(const char *sentence, float *speed_mph)
+{
+  char field[20];
+
+  if ((sentence == NULL) ||
+      (speed_mph == NULL) ||
+      (strlen(sentence) < 6U) ||
+      ((sentence[0] != '$') && (sentence[0] != '!')))
+  {
+    return 0;
+  }
+
+  if ((strncmp(&sentence[3], "RMC", 3) == 0) &&
+      GPS_GetField(sentence, 2, field, sizeof(field)) &&
+      (field[0] == 'A') &&
+      GPS_GetField(sentence, 7, field, sizeof(field)) &&
+      (field[0] != '\0'))
+  {
+    *speed_mph = strtof(field, NULL) * KNOTS_TO_MPH;
+    return 1;
+  }
+
+  if (strncmp(&sentence[3], "VTG", 3) == 0)
+  {
+    if (GPS_GetField(sentence, 5, field, sizeof(field)) &&
+        (field[0] != '\0'))
+    {
+      *speed_mph = strtof(field, NULL) * KNOTS_TO_MPH;
+      return 1;
+    }
+
+    if (GPS_GetField(sentence, 7, field, sizeof(field)) &&
+        (field[0] != '\0'))
+    {
+      *speed_mph = strtof(field, NULL) * KMH_TO_MPH;
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static void GPS_UpdateSpeedFromSentence(const char *sentence)
+{
+  float speed_mph;
+
+  if (GPS_ParseSpeedMph(sentence, &speed_mph))
+  {
+    latest_gps_speed_mph = speed_mph;
+    latest_gps_speed_valid = 1;
+    latest_gps_speed_ms = HAL_GetTick();
+    VehicleSpeed_UpdateFromSources();
+
+    printf("GPS speed over ground: %.2f mph\r\n", latest_gps_speed_mph);
+  }
+}
+
+static void VehicleSpeed_UpdateFromSources(void)
+{
+  if (latest_gps_speed_valid &&
+      ((HAL_GetTick() - latest_gps_speed_ms) > GPS_SPEED_VALID_MS))
+  {
+    latest_gps_speed_valid = 0;
+  }
+
+  if (latest_gps_speed_valid &&
+      ((HAL_GetTick() - latest_gps_speed_ms) <= GPS_SPEED_VALID_MS))
+  {
+    latest_vehicle_speed_mph = latest_gps_speed_mph;
+    latest_vehicle_speed_source = "GPS";
+  }
+  else if (latest_imu_mph > 0.05f)
+  {
+    latest_vehicle_speed_mph = latest_imu_mph;
+    latest_vehicle_speed_source = "IMU_MOTION";
+  }
+  else
+  {
+    latest_vehicle_speed_mph = 0.0f;
+    latest_vehicle_speed_source = "NONE";
   }
 }
 
@@ -1119,7 +1276,8 @@ static void SD_LogInit(void)
 	      "adalogger_rtc,adalogger_rtc_valid,"
 	      "acc_x_mg,acc_y_mg,acc_z_mg,"
 	      "gyr_x_mdps,gyr_y_mdps,gyr_z_mdps,"
-	      "imu_mph,"
+	      "imu_motion_mph,gps_speed_mph,gps_speed_valid,"
+	      "vehicle_speed_mph,vehicle_speed_source,"
 	      "bme_temp_c,bme_pressure_pa,bme_humidity_pct,"
 	      "can_rx_count,can_id,can_ext,can_dlc,can_data,"
 	      "gps_sentence\r\n";
@@ -1240,11 +1398,13 @@ static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
   }
 
   const char *gps_text = latest_gps_sentence[0] ? latest_gps_sentence : "NO_GPS";
+  VehicleSpeed_UpdateFromSources();
 
   int len = snprintf(line,
                      line_size,
                      "%lu,\"%s\",%u,"
-                     "%ld,%ld,%ld,%ld,%ld,%ld,%.2f,"
+                     "%ld,%ld,%ld,%ld,%ld,%ld,"
+                     "%.2f,%.2f,%u,%.2f,\"%s\","
                      "%.2f,%.2f,%.2f,"
                      "%lu,0x%03lX,%u,%u,\"%s\","
                      "\"%s\"\r\n",
@@ -1260,6 +1420,10 @@ static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
                      (long)gy_mdps,
                      (long)gz_mdps,
                      (double)latest_imu_mph,
+                     (double)latest_gps_speed_mph,
+                     (unsigned int)latest_gps_speed_valid,
+                     (double)latest_vehicle_speed_mph,
+                     latest_vehicle_speed_source,
 
                      (double)latest_bme_temp_c,
                      (double)latest_bme_pressure_pa,
@@ -2559,9 +2723,20 @@ static int SunRaw_BuildBlock(char *out, size_t out_len)
   if (written < 0) return -1;
   pos += (size_t)written;
 
+  VehicleSpeed_UpdateFromSources();
+
   written = snprintf(&out[pos], out_len - pos,
-                     "IMU,MPH=%.2f\r\n",
+                     "IMU,MOTION_MPH=%.2f\r\n",
                      latest_imu_mph);
+  if (written < 0) return -1;
+  pos += (size_t)written;
+
+  written = snprintf(&out[pos], out_len - pos,
+                     "SPEED,GPS_MPH=%.2f,GPS_VALID=%u,VEHICLE_MPH=%.2f,SOURCE=%s\r\n",
+                     latest_gps_speed_mph,
+                     latest_gps_speed_valid,
+                     latest_vehicle_speed_mph,
+                     latest_vehicle_speed_source);
   if (written < 0) return -1;
   pos += (size_t)written;
 
