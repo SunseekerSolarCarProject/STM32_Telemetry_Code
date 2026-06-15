@@ -32,10 +32,30 @@
 
 #define BME280_FLOAT_ENABLE
 #include "bme280.h"
+
+/*
+ * File overview
+ * -------------
+ * main.c owns the application-level orchestration for the telemetry board:
+ * - BMI270 IMU setup and motion estimation.
+ * - GPS SPI byte draining, NMEA filtering, and lat/lon/speed extraction.
+ * - SD/FatFS CSV logging.
+ * - ESP32 SPI telemetry/command exchange for the Bluetooth/app path.
+ * - CAN listen-all capture and legacy Sunseeker raw_data RS232 block output.
+ * - BME280 environmental reads and status LED activity pulses.
+ *
+ * CubeMX-generated peripheral init functions remain near the bottom of the
+ * file.  Most application behavior is inside USER CODE sections above them.
+ */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+/*
+ * Date/time snapshot used for both the Adalogger RTC and CSV/RS232 output.
+ * The PCF8523 RTC stores fields separately, so keeping this normalized struct
+ * makes validation, printing, and SET_RTC handling easier.
+ */
 typedef struct
 {
   uint16_t year;
@@ -48,6 +68,10 @@ typedef struct
   uint8_t valid;
 } DateTime_t;
 
+/*
+ * Local IMU status values.  These are higher-level than the Bosch API result
+ * codes and are meant for startup/debug decisions in this application.
+ */
 typedef enum
 {
   IMU_OK = 0,
@@ -57,6 +81,10 @@ typedef enum
   IMU_ERR_CONFIG = 4
 } IMU_Status_t;
 
+/*
+ * Raw BMI270 sample values are signed 16-bit counts from the sensor.
+ * Conversion to mg/mdps happens separately so logs can include either form.
+ */
 typedef struct
 {
   int16_t acc_x;
@@ -67,6 +95,10 @@ typedef struct
   int16_t gyr_z;
 } BMI270_Raw_t;
 
+/*
+ * Converted BMI270 values use integer units that are easy to print and log:
+ * accel in milli-g, gyro in milli-degrees/second.
+ */
 typedef struct
 {
   int32_t acc_x_mg;
@@ -77,6 +109,10 @@ typedef struct
   int32_t gyr_z_mdps;
 } BMI270_Conv_t;
 
+/*
+ * Latest CAN frame cache.  Interrupt/poll receive paths update this struct,
+ * while the telemetry builders take snapshots from it for logging.
+ */
 typedef struct
 {
   uint32_t id;
@@ -87,6 +123,11 @@ typedef struct
   uint8_t new_msg;
 } STM32_CAN_Rx_t;
 
+/*
+ * SunRawEntry_t drives the RS232 "raw_data" block.  Each expected CAN packet
+ * gets one table row so the output always has the same order, even before a
+ * particular CAN ID has arrived.
+ */
 typedef struct
 {
   uint32_t can_id;
@@ -98,6 +139,10 @@ typedef struct
   uint32_t last_ms;
 } SunRawEntry_t;
 
+/*
+ * Logical LED activities.  The LED task turns these into short pulses and an
+ * error blink without each subsystem needing to know LED pin details.
+ */
 typedef enum
 {
   STATUS_RS232_TX = 0,
@@ -110,6 +155,7 @@ typedef enum
   STATUS_ACTIVITY_COUNT
 } StatusActivity_t;
 
+/* Pair a status LED GPIO port and pin in one compact table entry. */
 typedef struct
 {
   GPIO_TypeDef *port;
@@ -119,7 +165,11 @@ typedef struct
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-//IMU defines for data and setup
+/*
+ * BMI270 register/address constants.
+ * The Bosch driver handles most register work, but these addresses are used
+ * by local startup diagnostics and status reads.
+ */
 #define BMI270_ADDR_LOW      (0x68 << 1)
 #define BMI270_ADDR_HIGH     (0x69 << 1)
 #define BMI270_REG_CHIP_ID   0x00
@@ -135,7 +185,12 @@ typedef struct
 #define BMI270_REG_GYR_RANGE        0x43
 #define BMI270_REG_PWR_CONF         0x7C
 #define BMI270_REG_PWR_CTRL         0x7D
-//Adalogger RTC initialization defines
+
+/*
+ * Adalogger RTC is a PCF8523-compatible device on I2C.
+ * Register names match the PCF8523 datasheet to make SET_RTC/readback easier
+ * to audit when the RTC is not holding time.
+ */
 #define ADALOGGER_RTC_ADDR          (0x68 << 1)
 #define PCF8523_REG_CONTROL1        0x00
 #define PCF8523_REG_CONTROL2        0x01
@@ -148,27 +203,65 @@ typedef struct
 #define PCF8523_REG_MONTHS          0x08
 #define PCF8523_REG_YEARS           0x09
 #define SET_ADALOGGER_RTC_ON_BOOT  0
-//IMU calibration defines
+
+/*
+ * IMU speed-estimate tuning.
+ *
+ * Important limitation: the BMI270 does not provide reliable vehicle speed by
+ * itself for long periods.  The code below performs real acceleration
+ * integration, but it still drifts and should be treated as a fallback estimate.
+ * Actual vehicle speed should come from CAN first, then GPS.
+ */
 #define GRAVITY_MPS2        	  	 9.80665f
 #define ACC_1G_MG                    1000
 #define STILL_GYRO_LIMIT_MDPS        5000     // 5 dps
 #define STILL_ACC_MAG_TOL_MG         120      // accel magnitude must be near 1g
 #define MOVE_LIN_ACC_THRESHOLD_MG    180
+#define IMU_ACCEL_DEADBAND_MG        35       // ignore tiny residual accel bias
+#define IMU_MAX_DT_MS                2000     // reset integration after long gaps
+#define IMU_MAX_SPEED_MPH            120.0f   // reject runaway integration
+#define IMU_SAMPLE_PERIOD_MS         100      // 10 Hz integration update
+#define TELEMETRY_PERIOD_MS          1000     // 1 Hz SD/ESP32/debug output
 #define STILL_COUNT_LIMIT            8
-#define SPEED_FILTER_ALPHA           0.20f     // larger = reacts faster
-#define SPEED_DECAY_ALPHA            0.35f     // larger = drops to zero faster
-#define MAX_DEMO_SPEED_MPH           5.0f      // cap the display speed
-#define VELOCITY_DAMPING             0.92f    // reduces drift while moving
-//GPS data defines
-#define GPS_SPI_READ_LEN 	  64
+#define VELOCITY_DAMPING             0.92f    // per-update drift damping
+
+/*
+ * GPS SPI/NMEA settings.
+ * GPS is read as a stream of bytes.  Larger SPI chunks and a byte ring buffer
+ * keep the STM32 from falling behind when the GPS emits many NMEA sentences.
+ */
+#define GPS_SPI_READ_LEN 	  256
 #define GPS_NMEA_BUF_LEN      128
-#define GPS_SPI_TIMEOUT_MS    50
-#define GPS_SPEED_VALID_MS    3000
+#define GPS_SPI_TIMEOUT_MS    100
+#define GPS_POLL_PERIOD_MS    50
+#define GPS_PARSE_BUDGET_BYTES 1024
+#define GPS_BYTE_RING_SIZE    4096
+#define GPS_NAV_PRINT_PERIOD_MS 1000
+#define GPS_SPEED_VALID_MS    5000
+#define GPS_FIX_VALID_MS      5000
 #define KNOTS_TO_MPH          1.15077945f
 #define KMH_TO_MPH            0.62137119f
-//Defines for the SPI com. for esp32
+#define MPS_TO_MPH            2.23693629f
+#define CAN_SPEED_VALID_MS    1000
+#define CAN_SPEED_MAX_ABS_MPH 120.0f
+
+/*
+ * ESP32 telemetry link.
+ * STM32 sends either a one-time CSV header, a command response, or a $LOG CSV
+ * row in each SPI transaction.  ESP32_READY gates each transfer.
+ */
 #define ESP32_TX_FRAME_LEN       768
 #define TELEMETRY_LINE_LEN       640
+#define TELEMETRY_CSV_HEADER     "time_ms," \
+                                 "adalogger_rtc,adalogger_rtc_valid," \
+                                 "acc_x_mg,acc_y_mg,acc_z_mg," \
+                                 "gyr_x_mdps,gyr_y_mdps,gyr_z_mdps," \
+                                 "imu_speed_mph,gps_speed_mph,gps_speed_valid," \
+                                 "can_speed_mph,can_speed_valid,can_speed_source," \
+                                 "gps_lat_deg,gps_lon_deg,gps_fix_valid,gps_fix_age_ms," \
+                                 "vehicle_speed_mph,vehicle_speed_source," \
+                                 "bme_temp_c,bme_pressure_pa,bme_humidity_pct," \
+                                 "can_rx_count,can_id,can_ext,can_dlc,can_data"
 #define ESP32_SPI_TIMEOUT_MS     100
 #define ESP32_SEND_PERIOD_MS     1000
 #define ESP32_READY_ACTIVE       GPIO_PIN_SET
@@ -178,7 +271,12 @@ typedef struct
 #define BME280_SPI_TIMEOUT_MS    100
 #define ADALOGGER_RTC_I2C_TIMEOUT_MS  100
 #define ADALOGGER_RTC_I2C_RETRIES     2
-//uart sending data
+
+/*
+ * RS232 raw_data block settings.
+ * The block is sent once per second and keeps legacy CAN hex rows plus a
+ * compact NAV line for display software at 115200 baud.
+ */
 #define SUN_RAW_LINE_LEN        64
 #define SUN_RAW_BLOCK_LEN       4096
 #define SUN_RAW_SEND_PERIOD_MS  1000
@@ -267,17 +365,26 @@ SPI_HandleTypeDef hspi5;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+/*
+ * IMU gravity/motion estimator state.
+ * Gravity is learned while the car is physically still, then subtracted from
+ * accelerometer readings to estimate linear acceleration.
+ */
 static float gravity_x_mg = 0.0f;
 static float gravity_y_mg = 0.0f;
 static float gravity_z_mg = 1000.0f;
-
-static float demo_speed_mph = 0.0f;
 
 static float vel_x_mps = 0.0f;
 static float vel_y_mps = 0.0f;
 static float vel_z_mps = 0.0f;
 static uint32_t last_velocity_tick = 0;
 
+/*
+ * GPS receive state.
+ * SPI reads write into gps_spi_rx, then complete blocks are copied into the
+ * ring buffer.  The NMEA parser drains the ring buffer later so short blocking
+ * work elsewhere does not immediately lose GPS bytes.
+ */
 static char gps_nmea_buf[GPS_NMEA_BUF_LEN];
 static uint16_t gps_nmea_index = 0;
 static uint8_t gps_sentence_active = 0;
@@ -287,19 +394,43 @@ static volatile uint8_t gps_spi_busy = 0;
 static volatile uint8_t gps_spi_done = 0;
 static volatile uint8_t gps_spi_error = 0;
 static uint32_t gps_spi_start_ms = 0;
+static uint8_t gps_byte_ring[GPS_BYTE_RING_SIZE];
+static uint16_t gps_byte_head = 0;
+static uint16_t gps_byte_tail = 0;
+static uint16_t gps_byte_count = 0;
+static uint32_t gps_byte_overflow_count = 0;
+static uint32_t gps_last_nav_print_ms = 0;
 
+/* FatFS objects for the SD log file.  sd_ready gates all runtime writes. */
 static FATFS fs;
 static FIL log_file;
 static uint8_t sd_ready = 0;
 
+/*
+ * Latest processed navigation and speed values.
+ * Source priority for vehicle speed is CAN -> GPS -> IMU integrated estimate.
+ */
 static char latest_gps_sentence[GPS_NMEA_BUF_LEN];
 static float latest_imu_mph = 0.0f;
+static float latest_gps_lat_deg = 0.0f;
+static float latest_gps_lon_deg = 0.0f;
+static uint8_t latest_gps_fix_valid = 0;
+static uint32_t latest_gps_fix_ms = 0;
 static float latest_gps_speed_mph = 0.0f;
 static uint8_t latest_gps_speed_valid = 0;
 static uint32_t latest_gps_speed_ms = 0;
+static float latest_can_speed_mph = 0.0f;
+static uint8_t latest_can_speed_valid = 0;
+static uint32_t latest_can_speed_ms = 0;
+static const char *latest_can_speed_source = "NONE";
 static float latest_vehicle_speed_mph = 0.0f;
 static const char *latest_vehicle_speed_source = "NONE";
 
+/*
+ * ESP32 SPI transaction state.
+ * The ESP32 is full-duplex SPI: every STM32 transmit can also receive a command
+ * frame from the ESP32, so TX and RX buffers are both frame-sized.
+ */
 static uint32_t esp32_seq = 0;
 static uint8_t esp32_tx_frame[ESP32_TX_FRAME_LEN];
 static uint8_t esp32_rx_frame[ESP32_RX_FRAME_LEN];
@@ -310,9 +441,12 @@ static uint32_t esp32_spi_start_ms = 0;
 
 static char esp32_response[ESP32_RESPONSE_LEN];
 static uint8_t esp32_response_pending = 0;
+static uint8_t esp32_header_pending = 1;
 
+/* Runtime switch controlled by ESP32 commands; SD must also be mounted. */
 static uint8_t sd_logging_enabled = 1;
 
+/* Sensor/device health flags used by startup summary and runtime tasks. */
 static uint8_t adalogger_rtc_ok = 0;
 
 static struct bme280_dev bme280_dev;
@@ -326,6 +460,7 @@ static float latest_bme_humidity_pct = 0.0f;
 
 static STM32_CAN_Rx_t latest_can_rx = {0};
 
+/* Activity LEDs are driven by StatusLed_Task(), not directly by subsystems. */
 static const StatusLedPin_t status_leds[STATUS_ACTIVITY_COUNT] =
 {
   { GPIOD, LED1_Pin  },  // RS232 TX
@@ -342,6 +477,10 @@ static uint32_t status_activity_until[STATUS_ACTIVITY_COUNT];
 
 static uint8_t status_error_latched = 0;
 
+/*
+ * Fixed RS232 CAN table.  The output order does not depend on receive order,
+ * which makes the downstream parser/display simpler.
+ */
 static SunRawEntry_t sun_raw_table[] =
 {
   { MC_CAN_BASE1 + MC_BUS,        "MC1BUS", 0, 0, 0, 0, 0 },
@@ -398,20 +537,29 @@ static int32_t raw_acc_to_mg(int16_t raw);
 static int32_t raw_gyro_to_mdps(int16_t raw);
 static int32_t abs_i32(int32_t value);
 static void BMI270_InitGravityEstimate(void);
-static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data);
+static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data,
+                                          uint8_t print_debug);
 
 static void GPS_Select(void);
 static void GPS_Deselect(void);
 static void GPS_InitPins(void);
 static void GPS_PollSPI(void);
 static void GPS_ServiceSPI(void);
+static void GPS_BufferPush(uint8_t byte);
+static uint8_t GPS_BufferPop(uint8_t *byte);
+static void GPS_BufferRxBlock(const uint8_t *data, uint16_t len);
+static void GPS_ProcessBufferedBytes(uint16_t max_bytes);
 static void GPS_ProcessByte(uint8_t byte);
 static uint8_t GPS_GetField(const char *sentence,
                             uint8_t field_index,
                             char *out,
                             size_t out_len);
+static uint8_t GPS_IsNavSentence(const char *sentence);
+static uint8_t GPS_ParseCoordDeg(const char *value,
+                                 const char *hemisphere,
+                                 float *coord_deg);
 static uint8_t GPS_ParseSpeedMph(const char *sentence, float *speed_mph);
-static void GPS_UpdateSpeedFromSentence(const char *sentence);
+static void GPS_UpdateNavFromSentence(const char *sentence);
 static void VehicleSpeed_UpdateFromSources(void);
 
 static void ESP32_Select(void);
@@ -459,6 +607,8 @@ static uint8_t STM32_CAN_SendTestFrame(uint32_t std_id, uint8_t *data, uint8_t d
 static void Print_StartupSummary(int8_t bmi_result);
 
 static uint32_t CAN_MakeU32_LE(const uint8_t *data);
+static float CAN_U32ToFloat(uint32_t raw);
+static void VehicleSpeed_UpdateFromCANVelocity(uint32_t id, uint32_t velocity_word);
 static void SunRaw_UpdateFromCAN(uint32_t id, uint8_t dlc, const uint8_t *data);
 static int SunRaw_BuildBlock(char *out, size_t out_len);
 static void RS232_SendString(const char *text);
@@ -827,8 +977,14 @@ static int32_t raw_gyro_to_mdps(int16_t raw)
   return (int32_t)(((int64_t)raw * 2000000LL) / 32768LL);
 }
 
-static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data)
+static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data,
+                                          uint8_t print_debug)
 {
+	  /*
+	   * Convert the raw Bosch API sample into engineering units first.  Keeping
+	   * the conversion local makes the subsequent still/moving checks easier to
+	   * read and keeps all thresholds in mg/mdps.
+	   */
 	  int32_t ax_mg = raw_acc_to_mg(sensor_data->acc.x);
 	  int32_t ay_mg = raw_acc_to_mg(sensor_data->acc.y);
 	  int32_t az_mg = raw_acc_to_mg(sensor_data->acc.z);
@@ -850,6 +1006,11 @@ static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data)
 	  uint8_t accel_near_1g =
 	      (fabsf(acc_mag_mg - ACC_1G_MG) < STILL_ACC_MAG_TOL_MG);
 
+	  /*
+	   * "Physically still" means:
+	   * - the gyro is quiet, so the sensor is not rotating, and
+	   * - total acceleration is close to 1g, so it is mostly gravity.
+	   */
 	  uint8_t physically_still = gyro_still && accel_near_1g;
 
 	  /*
@@ -867,6 +1028,11 @@ static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data)
 	  int32_t lin_ay_mg = (int32_t)((float)ay_mg - gravity_y_mg);
 	  int32_t lin_az_mg = (int32_t)((float)az_mg - gravity_z_mg);
 
+	  /*
+	   * Linear acceleration is what remains after subtracting estimated gravity.
+	   * This is useful for motion detection, but integrating it into speed drifts
+	   * very quickly in a real vehicle.  CAN/GPS remain the real speed sources.
+	   */
 	  float lin_acc_mag_mg = sqrtf((float)(lin_ax_mg * lin_ax_mg) +
 	                               (float)(lin_ay_mg * lin_ay_mg) +
 	                               (float)(lin_az_mg * lin_az_mg));
@@ -878,68 +1044,114 @@ static void BMI270_UpdateVelocityAndPrint(struct bmi2_sens_data *sensor_data)
 	    moving = 1;
 	  }
 
-	  float target_speed_mph = 0.0f;
+	  uint32_t now_ms = HAL_GetTick();
+	  uint32_t dt_ms = now_ms - last_velocity_tick;
 
-	  if (moving)
+	  if ((last_velocity_tick == 0U) || (dt_ms > IMU_MAX_DT_MS))
 	  {
 	    /*
-	     * Demo speed estimate:
-	     * 180 mg or less -> 0 mph
-	     * around 1000 mg -> about 5 mph
-	     *
-	     * This is intentionally NOT true velocity integration.
-	     * It behaves more like a stable movement/speed display.
+	     * If the sample gap is too large, integration would create a bogus
+	     * velocity jump.  Reset the integration clock and keep the previous
+	     * velocity state bounded.
 	     */
-	    target_speed_mph =
-	        ((lin_acc_mag_mg - MOVE_LIN_ACC_THRESHOLD_MG) /
-	        (1000.0f - MOVE_LIN_ACC_THRESHOLD_MG)) * MAX_DEMO_SPEED_MPH;
+	    dt_ms = 0U;
+	  }
 
-	    if (target_speed_mph < 0.0f)
+	  last_velocity_tick = now_ms;
+
+	  if (physically_still)
+	  {
+	    /*
+	     * Zero-velocity update: when the IMU is actually still, force velocity
+	     * to zero.  This is the main thing that prevents drift from growing
+	     * without bound while the car is parked.
+	     */
+	    vel_x_mps = 0.0f;
+	    vel_y_mps = 0.0f;
+	    vel_z_mps = 0.0f;
+	  }
+	  else if (dt_ms > 0U)
+	  {
+	    float dt_s = (float)dt_ms / 1000.0f;
+	    float lin_ax_mps2 = 0.0f;
+	    float lin_ay_mps2 = 0.0f;
+	    float lin_az_mps2 = 0.0f;
+
+	    /*
+	     * Convert linear acceleration from mg to m/s^2 after a small deadband.
+	     * The deadband removes residual gravity/bias errors that otherwise
+	     * integrate into speed even when the car is not truly accelerating.
+	     */
+	    if (abs_i32(lin_ax_mg) > IMU_ACCEL_DEADBAND_MG)
 	    {
-	      target_speed_mph = 0.0f;
+	      lin_ax_mps2 = ((float)lin_ax_mg / 1000.0f) * GRAVITY_MPS2;
 	    }
 
-	    if (target_speed_mph > MAX_DEMO_SPEED_MPH)
+	    if (abs_i32(lin_ay_mg) > IMU_ACCEL_DEADBAND_MG)
 	    {
-	      target_speed_mph = MAX_DEMO_SPEED_MPH;
+	      lin_ay_mps2 = ((float)lin_ay_mg / 1000.0f) * GRAVITY_MPS2;
 	    }
 
-	    demo_speed_mph =
-	        (1.0f - SPEED_FILTER_ALPHA) * demo_speed_mph +
-	        SPEED_FILTER_ALPHA * target_speed_mph;
+	    if (abs_i32(lin_az_mg) > IMU_ACCEL_DEADBAND_MG)
+	    {
+	      lin_az_mps2 = ((float)lin_az_mg / 1000.0f) * GRAVITY_MPS2;
+	    }
+
+	    /*
+	     * Integrate acceleration into velocity on each sensor axis.
+	     * This is a real physics calculation: v = v + a * dt.
+	     */
+	    vel_x_mps += lin_ax_mps2 * dt_s;
+	    vel_y_mps += lin_ay_mps2 * dt_s;
+	    vel_z_mps += lin_az_mps2 * dt_s;
+
+	    /*
+	     * Small damping limits long-term drift from accelerometer bias.  Without
+	     * GPS/CAN correction, IMU-only speed will still drift over time.
+	     */
+	    vel_x_mps *= VELOCITY_DAMPING;
+	    vel_y_mps *= VELOCITY_DAMPING;
+	    vel_z_mps *= VELOCITY_DAMPING;
 	  }
 	  else
 	  {
-	    /*
-	     * Decay quickly back to zero when movement stops.
-	     */
-	    demo_speed_mph =
-	        (1.0f - SPEED_DECAY_ALPHA) * demo_speed_mph;
-
-	    if (demo_speed_mph < 0.05f)
-	    {
-	      demo_speed_mph = 0.0f;
-	    }
+	    /* No elapsed time means no integration this pass. */
 	  }
 
-	  int32_t speed_cmph = (int32_t)(demo_speed_mph * 100.0f);
-	  latest_imu_mph = demo_speed_mph;
+	  float imu_speed_mps = sqrtf((vel_x_mps * vel_x_mps) +
+	                              (vel_y_mps * vel_y_mps) +
+	                              (vel_z_mps * vel_z_mps));
+
+	  latest_imu_mph = imu_speed_mps * MPS_TO_MPH;
+
+	  if (latest_imu_mph > IMU_MAX_SPEED_MPH)
+	  {
+	    vel_x_mps = 0.0f;
+	    vel_y_mps = 0.0f;
+	    vel_z_mps = 0.0f;
+	    latest_imu_mph = 0.0f;
+	  }
+
+	  int32_t speed_cmph = (int32_t)(latest_imu_mph * 100.0f);
 	  VehicleSpeed_UpdateFromSources();
 
-	  printf("ACC mg: X=%6ld Y=%6ld Z=%6ld | "
-	         "LIN mg: X=%6ld Y=%6ld Z=%6ld | "
-	         "LIN_MAG=%6ld mg | "
-	         "GYR mdps: X=%7ld Y=%7ld Z=%7ld | "
-	         "IMU_MOTION_MPH=%ld.%02ld | VEHICLE_MPH=%.2f(%s) | %s\r\n",
-	         (long)ax_mg, (long)ay_mg, (long)az_mg,
-	         (long)lin_ax_mg, (long)lin_ay_mg, (long)lin_az_mg,
-	         (long)lin_acc_mag_mg,
-	         (long)gx_mdps, (long)gy_mdps, (long)gz_mdps,
-	         (long)(speed_cmph / 100),
-	         (long)abs_i32(speed_cmph % 100),
-	         (double)latest_vehicle_speed_mph,
-	         latest_vehicle_speed_source,
-	         moving ? "MOVING" : "STILL");
+	  if (print_debug)
+	  {
+	    printf("ACC mg: X=%6ld Y=%6ld Z=%6ld | "
+	           "LIN mg: X=%6ld Y=%6ld Z=%6ld | "
+	           "LIN_MAG=%6ld mg | "
+	           "GYR mdps: X=%7ld Y=%7ld Z=%7ld | "
+	           "IMU_SPEED_MPH=%ld.%02ld | VEHICLE_MPH=%.2f(%s) | %s\r\n",
+	           (long)ax_mg, (long)ay_mg, (long)az_mg,
+	           (long)lin_ax_mg, (long)lin_ay_mg, (long)lin_az_mg,
+	           (long)lin_acc_mag_mg,
+	           (long)gx_mdps, (long)gy_mdps, (long)gz_mdps,
+	           (long)(speed_cmph / 100),
+	           (long)abs_i32(speed_cmph % 100),
+	           (double)latest_vehicle_speed_mph,
+	           latest_vehicle_speed_source,
+	           moving ? "MOVING" : "STILL");
+	  }
 }
 
 static void GPS_Select(void)
@@ -965,6 +1177,75 @@ static void GPS_InitPins(void)
   printf("GPS pins initialized\r\n");
 }
 
+static void GPS_BufferPush(uint8_t byte)
+{
+  /*
+   * Push one raw GPS byte into the ring.  When the ring is full, discard the
+   * oldest byte instead of rejecting the newest one.  For live navigation,
+   * newest GPS fixes are more valuable than stale buffered sentences.
+   */
+  gps_byte_ring[gps_byte_head] = byte;
+  gps_byte_head = (uint16_t)((gps_byte_head + 1U) % GPS_BYTE_RING_SIZE);
+
+  if (gps_byte_count < GPS_BYTE_RING_SIZE)
+  {
+    gps_byte_count++;
+  }
+  else
+  {
+    gps_byte_tail = (uint16_t)((gps_byte_tail + 1U) % GPS_BYTE_RING_SIZE);
+    gps_byte_overflow_count++;
+  }
+}
+
+static uint8_t GPS_BufferPop(uint8_t *byte)
+{
+  /* Return 0 when the parser has caught up with all buffered GPS bytes. */
+  if ((byte == NULL) || (gps_byte_count == 0U))
+  {
+    return 0;
+  }
+
+  *byte = gps_byte_ring[gps_byte_tail];
+  gps_byte_tail = (uint16_t)((gps_byte_tail + 1U) % GPS_BYTE_RING_SIZE);
+  gps_byte_count--;
+
+  return 1;
+}
+
+static void GPS_BufferRxBlock(const uint8_t *data, uint16_t len)
+{
+  /*
+   * Queue a completed SPI receive block quickly.  Parsing is intentionally done
+   * later so the SPI service path stays short and can start the next transfer.
+   */
+  if (data == NULL)
+  {
+    return;
+  }
+
+  for (uint16_t i = 0; i < len; i++)
+  {
+    GPS_BufferPush(data[i]);
+  }
+}
+
+static void GPS_ProcessBufferedBytes(uint16_t max_bytes)
+{
+  uint8_t byte;
+
+  /*
+   * Bounded parser budget prevents GPS parsing from monopolizing the main loop
+   * if a large burst arrives.  The task runs frequently, so it catches up over
+   * several passes without starving CAN, LEDs, or ESP32 service.
+   */
+  while ((max_bytes > 0U) && GPS_BufferPop(&byte))
+  {
+    GPS_ProcessByte(byte);
+    max_bytes--;
+  }
+}
+
 static void GPS_ProcessByte(uint8_t byte)
 {
   /*
@@ -981,6 +1262,7 @@ static void GPS_ProcessByte(uint8_t byte)
    */
   if (byte == '$')
   {
+    /* A new '$' always starts a fresh NMEA sentence. */
     gps_sentence_active = 1;
     gps_nmea_index = 0;
     gps_nmea_buf[gps_nmea_index++] = (char)byte;
@@ -1028,12 +1310,17 @@ static void GPS_ProcessByte(uint8_t byte)
 	    gps_nmea_buf[gps_nmea_index] = '\0';
 	  }
 
-	  printf("GPS NMEA: %s\r\n", gps_nmea_buf);
-
-	  strncpy(latest_gps_sentence, gps_nmea_buf, GPS_NMEA_BUF_LEN - 1);
-	  latest_gps_sentence[GPS_NMEA_BUF_LEN - 1] = '\0';
-	  GPS_UpdateSpeedFromSentence(gps_nmea_buf);
-	  StatusLed_RequestPulse(STATUS_GPS_RX);
+	  if (GPS_IsNavSentence(gps_nmea_buf))
+	  {
+	    /*
+	     * Keep only navigation sentences.  This avoids logging/parsing the GPS
+	     * module's extra status/debug sentences and reduces downstream delay.
+	     */
+	    strncpy(latest_gps_sentence, gps_nmea_buf, GPS_NMEA_BUF_LEN - 1);
+	    latest_gps_sentence[GPS_NMEA_BUF_LEN - 1] = '\0';
+	    GPS_UpdateNavFromSentence(gps_nmea_buf);
+	    StatusLed_RequestPulse(STATUS_GPS_RX);
+	  }
 
 	  gps_sentence_active = 0;
 	  gps_nmea_index = 0;
@@ -1045,6 +1332,11 @@ static uint8_t GPS_GetField(const char *sentence,
                             char *out,
                             size_t out_len)
 {
+  /*
+   * Extract comma-delimited NMEA fields without using strtok().
+   * strtok() modifies the source string and keeps global parser state, which is
+   * not a good fit for repeatedly parsing the same sentence in embedded code.
+   */
   uint8_t current_field = 0;
   size_t out_pos = 0;
 
@@ -1095,8 +1387,67 @@ static uint8_t GPS_GetField(const char *sentence,
   return 0;
 }
 
+static uint8_t GPS_IsNavSentence(const char *sentence)
+{
+  /*
+   * NMEA talker IDs vary (GP, GN, GL, etc.), but the message type sits at
+   * sentence[3..5].  RMC/GGA/VTG provide the navigation values this firmware
+   * actually uses.
+   */
+  if ((sentence == NULL) ||
+      (strlen(sentence) < 6U) ||
+      ((sentence[0] != '$') && (sentence[0] != '!')))
+  {
+    return 0;
+  }
+
+  return ((strncmp(&sentence[3], "RMC", 3) == 0) ||
+          (strncmp(&sentence[3], "GGA", 3) == 0) ||
+          (strncmp(&sentence[3], "VTG", 3) == 0));
+}
+
+static uint8_t GPS_ParseCoordDeg(const char *value,
+                                 const char *hemisphere,
+                                 float *coord_deg)
+{
+  /*
+   * NMEA coordinates are ddmm.mmmm for latitude and dddmm.mmmm for longitude.
+   * Dividing the integer degree portion from the minutes portion converts them
+   * to normal signed decimal degrees for logging/app display.
+   */
+  float raw;
+  int degrees;
+  float minutes;
+
+  if ((value == NULL) ||
+      (hemisphere == NULL) ||
+      (coord_deg == NULL) ||
+      (value[0] == '\0') ||
+      (hemisphere[0] == '\0'))
+  {
+    return 0;
+  }
+
+  raw = strtof(value, NULL);
+  degrees = (int)(raw / 100.0f);
+  minutes = raw - ((float)degrees * 100.0f);
+
+  *coord_deg = (float)degrees + (minutes / 60.0f);
+
+  if ((hemisphere[0] == 'S') || (hemisphere[0] == 'W'))
+  {
+    *coord_deg = -*coord_deg;
+  }
+
+  return 1;
+}
+
 static uint8_t GPS_ParseSpeedMph(const char *sentence, float *speed_mph)
 {
+  /*
+   * RMC speed is knots.  VTG may provide knots and/or km/h.
+   * The parsed value is normalized to mph so it can be compared with CAN speed.
+   */
   char field[20];
 
   if ((sentence == NULL) ||
@@ -1137,30 +1488,118 @@ static uint8_t GPS_ParseSpeedMph(const char *sentence, float *speed_mph)
   return 0;
 }
 
-static void GPS_UpdateSpeedFromSentence(const char *sentence)
+static void GPS_UpdateNavFromSentence(const char *sentence)
 {
+  /*
+   * Update speed and position independently.  Some NMEA messages have speed
+   * but no coordinates (VTG), while others have coordinates and may also carry
+   * speed (RMC).  Each latest_* field has its own timeout.
+   */
   float speed_mph;
+  float lat_deg;
+  float lon_deg;
+  char status[8];
+  char lat[20];
+  char ns[4];
+  char lon[20];
+  char ew[4];
+  uint8_t updated_fix = 0;
 
   if (GPS_ParseSpeedMph(sentence, &speed_mph))
   {
     latest_gps_speed_mph = speed_mph;
     latest_gps_speed_valid = 1;
     latest_gps_speed_ms = HAL_GetTick();
-    VehicleSpeed_UpdateFromSources();
+  }
 
-    printf("GPS speed over ground: %.2f mph\r\n", latest_gps_speed_mph);
+  if ((strncmp(&sentence[3], "RMC", 3) == 0) &&
+      GPS_GetField(sentence, 2, status, sizeof(status)) &&
+      (status[0] == 'A') &&
+      GPS_GetField(sentence, 3, lat, sizeof(lat)) &&
+      GPS_GetField(sentence, 4, ns, sizeof(ns)) &&
+      GPS_GetField(sentence, 5, lon, sizeof(lon)) &&
+      GPS_GetField(sentence, 6, ew, sizeof(ew)) &&
+      GPS_ParseCoordDeg(lat, ns, &lat_deg) &&
+      GPS_ParseCoordDeg(lon, ew, &lon_deg))
+  {
+    /* RMC status 'A' means active/valid navigation data. */
+    updated_fix = 1;
+  }
+  else if ((strncmp(&sentence[3], "GGA", 3) == 0) &&
+           GPS_GetField(sentence, 6, status, sizeof(status)) &&
+           (status[0] != '\0') &&
+           (status[0] != '0') &&
+           GPS_GetField(sentence, 2, lat, sizeof(lat)) &&
+           GPS_GetField(sentence, 3, ns, sizeof(ns)) &&
+           GPS_GetField(sentence, 4, lon, sizeof(lon)) &&
+           GPS_GetField(sentence, 5, ew, sizeof(ew)) &&
+           GPS_ParseCoordDeg(lat, ns, &lat_deg) &&
+           GPS_ParseCoordDeg(lon, ew, &lon_deg))
+  {
+    /* GGA fix quality 0 is invalid; any nonzero value is usable here. */
+    updated_fix = 1;
+  }
+
+  if (updated_fix)
+  {
+    latest_gps_lat_deg = lat_deg;
+    latest_gps_lon_deg = lon_deg;
+    latest_gps_fix_valid = 1;
+    latest_gps_fix_ms = HAL_GetTick();
+  }
+
+  VehicleSpeed_UpdateFromSources();
+
+  if ((updated_fix || GPS_ParseSpeedMph(sentence, &speed_mph)) &&
+      ((HAL_GetTick() - gps_last_nav_print_ms) >= GPS_NAV_PRINT_PERIOD_MS))
+  {
+    gps_last_nav_print_ms = HAL_GetTick();
+
+    printf("GPS nav: fix=%u lat=%.6f lon=%.6f speed=%.2f mph buf=%u ovf=%lu\r\n",
+           latest_gps_fix_valid,
+           (double)latest_gps_lat_deg,
+           (double)latest_gps_lon_deg,
+           (double)latest_gps_speed_mph,
+           gps_byte_count,
+           (unsigned long)gps_byte_overflow_count);
   }
 }
 
 static void VehicleSpeed_UpdateFromSources(void)
 {
+  /*
+   * Central vehicle-speed arbitration.
+   *
+   * 1. Fresh CAN motor-controller velocity wins.
+   * 2. Fresh GPS speed is the next-best source.
+   * 3. IMU integrated speed is only a fallback estimate because it drifts.
+   */
+  if (latest_can_speed_valid &&
+      ((HAL_GetTick() - latest_can_speed_ms) > CAN_SPEED_VALID_MS))
+  {
+    latest_can_speed_valid = 0;
+    latest_can_speed_source = "NONE";
+  }
+
   if (latest_gps_speed_valid &&
       ((HAL_GetTick() - latest_gps_speed_ms) > GPS_SPEED_VALID_MS))
   {
     latest_gps_speed_valid = 0;
   }
 
-  if (latest_gps_speed_valid &&
+  if (latest_gps_fix_valid &&
+      ((HAL_GetTick() - latest_gps_fix_ms) > GPS_FIX_VALID_MS))
+  {
+    latest_gps_fix_valid = 0;
+  }
+
+  if (latest_can_speed_valid &&
+      ((HAL_GetTick() - latest_can_speed_ms) <= CAN_SPEED_VALID_MS))
+  {
+    latest_vehicle_speed_mph = latest_can_speed_mph;
+    latest_vehicle_speed_source = latest_can_speed_source;
+  }
+  else if (latest_gps_speed_valid &&
       ((HAL_GetTick() - latest_gps_speed_ms) <= GPS_SPEED_VALID_MS))
   {
     latest_vehicle_speed_mph = latest_gps_speed_mph;
@@ -1169,7 +1608,7 @@ static void VehicleSpeed_UpdateFromSources(void)
   else if (latest_imu_mph > 0.05f)
   {
     latest_vehicle_speed_mph = latest_imu_mph;
-    latest_vehicle_speed_source = "IMU_MOTION";
+    latest_vehicle_speed_source = "IMU_INTEGRATED";
   }
   else
   {
@@ -1227,11 +1666,10 @@ static void GPS_ServiceSPI(void)
       return;
     }
 
-    for (uint16_t i = 0; i < GPS_SPI_READ_LEN; i++)
-    {
-      GPS_ProcessByte(gps_spi_rx[i]);
-    }
+    GPS_BufferRxBlock(gps_spi_rx, GPS_SPI_READ_LEN);
   }
+
+  GPS_ProcessBufferedBytes(GPS_PARSE_BUDGET_BYTES);
 
   if (gps_spi_busy &&
       ((HAL_GetTick() - gps_spi_start_ms) > GPS_SPI_TIMEOUT_MS))
@@ -1249,52 +1687,112 @@ static void GPS_ServiceSPI(void)
 
 static void SD_LogInit(void)
 {
-  FRESULT res;
+	 FRESULT res;
+	  char filename[32];
 
-  HAL_GPIO_WritePin(SDC_CS_GPIO_Port, SDC_CS_Pin, GPIO_PIN_SET);
+	  /*
+	   * SD card mount is intentionally retried.  With jumper wires or marginal
+	   * contacts, the first FatFS mount can fail even after the low-level driver
+	   * later succeeds.
+	   */
+	  HAL_GPIO_WritePin(SDC_CS_GPIO_Port, SDC_CS_Pin, GPIO_PIN_SET);
+	  HAL_Delay(100);
 
-  res = f_mount(&fs, "", 1);
-  if (res != FR_OK)
-  {
-	printf("SD mount failed: %d (%s)\r\n", res, FatFs_ErrorString(res));
-    sd_ready = 0;
-    return;
-  }
+	  printf("SD mount starting...\r\n");
 
-  res = f_open(&log_file, "imu_gps.csv", FA_OPEN_APPEND | FA_WRITE);
-  if (res != FR_OK)
-  {
-	printf("SD mount failed: %d (%s)\r\n", res, FatFs_ErrorString(res));
-    sd_ready = 0;
-    return;
-  }
+	  /*
+	   * Clear any previous mount state first.
+	   */
+	  f_mount(NULL, USERPath, 0);
 
-  if (f_size(&log_file) == 0)
-  {
-	  const char *header =
-	      "time_ms,"
-	      "adalogger_rtc,adalogger_rtc_valid,"
-	      "acc_x_mg,acc_y_mg,acc_z_mg,"
-	      "gyr_x_mdps,gyr_y_mdps,gyr_z_mdps,"
-	      "imu_motion_mph,gps_speed_mph,gps_speed_valid,"
-	      "vehicle_speed_mph,vehicle_speed_source,"
-	      "bme_temp_c,bme_pressure_pa,bme_humidity_pct,"
-	      "can_rx_count,can_id,can_ext,can_dlc,can_data,"
-	      "gps_sentence\r\n";
+	  for (uint8_t attempt = 1; attempt <= 5; attempt++)
+	  {
+	    printf("SD mount attempt %u...\r\n", attempt);
 
-    UINT bw;
-    f_write(&log_file, header, strlen(header), &bw);
-    f_sync(&log_file);
-  }
+	    res = f_mount(&fs, USERPath, 1);
 
-  sd_ready = 1;
-  printf("SD log ready\r\n");
+	    if (res == FR_OK)
+	    {
+	      break;
+	    }
+
+	    printf("SD mount attempt %u failed: %d (%s)\r\n",
+	           attempt,
+	           res,
+	           FatFs_ErrorString(res));
+
+	    HAL_GPIO_WritePin(SDC_CS_GPIO_Port, SDC_CS_Pin, GPIO_PIN_SET);
+	    HAL_Delay(300);
+	  }
+
+	  if (res != FR_OK)
+	  {
+	    printf("SD mount failed final: %d (%s)\r\n",
+	           res,
+	           FatFs_ErrorString(res));
+
+	    sd_ready = 0;
+	    return;
+	  }
+
+	  snprintf(filename, sizeof(filename), "%s/imu_gps.csv", USERPath);
+
+	  printf("Opening SD file: %s\r\n", filename);
+
+	  res = f_open(&log_file, filename, FA_OPEN_APPEND | FA_WRITE);
+	  if (res != FR_OK)
+	  {
+	    printf("SD file open failed: %d (%s)\r\n",
+	           res,
+	           FatFs_ErrorString(res));
+
+	    sd_ready = 0;
+	    return;
+	  }
+
+	  if (f_size(&log_file) == 0)
+	  {
+	    /*
+	     * Only write the CSV header for a brand-new/empty file.  Existing logs
+	     * are appended so a power cycle does not overwrite prior telemetry.
+	     */
+	    const char *header = TELEMETRY_CSV_HEADER "\r\n";
+
+	    UINT bw = 0;
+
+	    res = f_write(&log_file, header, strlen(header), &bw);
+	    if ((res != FR_OK) || (bw != strlen(header)))
+	    {
+	      printf("SD header write failed: %d (%s), bw=%u\r\n",
+	             res,
+	             FatFs_ErrorString(res),
+	             bw);
+
+	      sd_ready = 0;
+	      return;
+	    }
+
+	    res = f_sync(&log_file);
+	    if (res != FR_OK)
+	    {
+	      printf("SD header sync failed: %d (%s)\r\n",
+	             res,
+	             FatFs_ErrorString(res));
+
+	      sd_ready = 0;
+	      return;
+	    }
+	  }
+
+	  sd_ready = 1;
+	  printf("SD log ready\r\n");
 }
 
 static void SD_LogIMUAndGPS(struct bmi2_sens_data *sensor_data)
 {
 	if (!sd_ready || !sd_logging_enabled)
 	{
+	  /* SD is optional at runtime; telemetry continues over ESP32/RS232. */
 	  return;
 	}
 
@@ -1308,6 +1806,10 @@ static void SD_LogIMUAndGPS(struct bmi2_sens_data *sensor_data)
 	    FRESULT wr = f_write(&log_file, line, (UINT)len, &bw);
 	    FRESULT sy = f_sync(&log_file);
 
+	    /*
+	     * f_sync() trades write speed for survivability.  It makes each row much
+	     * more likely to survive if power is removed during a run.
+	     */
 	    if ((wr == FR_OK) && (sy == FR_OK) && (bw == (UINT)len))
 	    {
 	      StatusLed_RequestPulse(STATUS_SD_LOG);
@@ -1356,6 +1858,10 @@ static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
                                   char *line,
                                   size_t line_size)
 {
+  /*
+   * Single source of truth for SD and ESP32 telemetry rows.
+   * If a column is added here, TELEMETRY_CSV_HEADER must be updated too.
+   */
   if ((sensor_data == NULL) || (line == NULL) || (line_size == 0))
   {
     return -1;
@@ -1375,6 +1881,7 @@ static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
   char can_data_text[32] = "NO_CAN";
 
   uint8_t adalogger_valid = 0;
+  uint32_t gps_fix_age_ms = 0xFFFFFFFFUL;
 
   STM32_CAN_Rx_t can_snapshot;
 
@@ -1397,17 +1904,26 @@ static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
     DateTime_ToString(&adalogger_dt, adalogger_rtc_text, sizeof(adalogger_rtc_text));
   }
 
-  const char *gps_text = latest_gps_sentence[0] ? latest_gps_sentence : "NO_GPS";
   VehicleSpeed_UpdateFromSources();
+
+  /*
+   * A valid flag plus age lets the receiver decide how stale location data can
+   * be before it stops using it.  Invalid fix age is intentionally 0xFFFFFFFF
+   * in CSV so it is obvious in offline analysis.
+   */
+  if (latest_gps_fix_valid)
+  {
+    gps_fix_age_ms = HAL_GetTick() - latest_gps_fix_ms;
+  }
 
   int len = snprintf(line,
                      line_size,
                      "%lu,\"%s\",%u,"
                      "%ld,%ld,%ld,%ld,%ld,%ld,"
-                     "%.2f,%.2f,%u,%.2f,\"%s\","
+                     "%.2f,%.2f,%u,%.2f,%u,\"%s\","
+                     "%.6f,%.6f,%u,%lu,%.2f,\"%s\","
                      "%.2f,%.2f,%.2f,"
-                     "%lu,0x%03lX,%u,%u,\"%s\","
-                     "\"%s\"\r\n",
+                     "%lu,0x%03lX,%u,%u,\"%s\"\r\n",
                      (unsigned long)HAL_GetTick(),
 
                      adalogger_rtc_text,
@@ -1422,6 +1938,13 @@ static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
                      (double)latest_imu_mph,
                      (double)latest_gps_speed_mph,
                      (unsigned int)latest_gps_speed_valid,
+                     (double)latest_can_speed_mph,
+                     (unsigned int)latest_can_speed_valid,
+                     latest_can_speed_source,
+                     (double)latest_gps_lat_deg,
+                     (double)latest_gps_lon_deg,
+                     (unsigned int)latest_gps_fix_valid,
+                     (unsigned long)gps_fix_age_ms,
                      (double)latest_vehicle_speed_mph,
                      latest_vehicle_speed_source,
 
@@ -1433,9 +1956,7 @@ static int Telemetry_BuildCSVLine(struct bmi2_sens_data *sensor_data,
                      (unsigned long)can_snapshot.id,
                      (unsigned int)can_snapshot.is_extended,
                      (unsigned int)can_snapshot.dlc,
-                     can_data_text,
-
-                     gps_text);
+                     can_data_text);
 
   if ((len < 0) || (len >= (int)line_size))
   {
@@ -1462,6 +1983,12 @@ static uint8_t ESP32_IsReady(void)
 
 static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
 {
+  /*
+   * ESP32 transaction priority:
+   * 1. Response to a command from the ESP32/app.
+   * 2. One-time CSV header so the app can map fields by name.
+   * 3. Normal $LOG CSV telemetry row.
+   */
   ESP32_ServiceSPI();
 
   if (esp32_spi_busy)
@@ -1493,8 +2020,17 @@ static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
 
     sending_response = 1;
   }
+  else if (esp32_header_pending)
+  {
+    /* $HDR is not logged to SD; it is only for the app/parser on ESP32. */
+    snprintf((char *)esp32_tx_frame,
+             sizeof(esp32_tx_frame),
+             "$HDR,%s\r\n",
+             TELEMETRY_CSV_HEADER);
+  }
   else
   {
+    /* Normal app telemetry: "$LOG,<sequence>,<csv row>". */
     int len = Telemetry_BuildCSVLine(sensor_data, line, sizeof(line));
 
     if (len <= 0)
@@ -1526,6 +2062,10 @@ static void ESP32_SendTelemetry(struct bmi2_sens_data *sensor_data)
     if (sending_response)
     {
       esp32_response_pending = 0;
+    }
+    else if (esp32_header_pending)
+    {
+      esp32_header_pending = 0;
     }
   }
   else
@@ -1642,6 +2182,10 @@ static uint8_t DateTime_CalcWeekday(uint16_t year, uint8_t month, uint8_t day)
 
 static void ESP32_ProcessRxFrame(const uint8_t *rx, size_t len)
 {
+  /*
+   * SPI frames are fixed-size and padded with 0x00/0xFF.  This extracts the
+   * first printable command string from the returned MISO bytes.
+   */
   char cmd[ESP32_CMD_LEN];
   size_t pos = 0;
 
@@ -1695,6 +2239,10 @@ static void ESP32_ProcessRxFrame(const uint8_t *rx, size_t len)
 
 static void ESP32_HandleCommand(char *cmd)
 {
+  /*
+   * Accept a few command formats so the ESP32 firmware/app can evolve without
+   * requiring the STM32 parser to be rewritten every time.
+   */
   char *p;
 
   if (cmd == NULL)
@@ -1838,6 +2386,11 @@ static void ESP32_HandleCommand(char *cmd)
 
 static void ESP32_ExecuteCommand(const char *id, const char *verb)
 {
+  /*
+   * Commands are intentionally small and synchronous:
+   * - START_LOG / STOP_LOG control SD logging
+   * - SET_RTC updates the Adalogger RTC
+   */
   if ((id == NULL) || (verb == NULL))
   {
     return;
@@ -2484,49 +3037,6 @@ static uint8_t STM32_CAN_ListenAllInit(void)
   return 1;
 }
 
-//void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
-//{
-//  CAN_RxHeaderTypeDef rx_header;
-//  uint8_t rx_data[8];
-//
-//  if (hcan->Instance != CAN1)
-//  {
-//    return;
-//  }
-//
-//  while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0)
-//  {
-//    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) == HAL_OK)
-//    {
-//      if (rx_header.IDE == CAN_ID_STD)
-//      {
-//        latest_can_rx.id = rx_header.StdId;
-//        latest_can_rx.is_extended = 0;
-//      }
-//      else
-//      {
-//        latest_can_rx.id = rx_header.ExtId;
-//        latest_can_rx.is_extended = 1;
-//      }
-//
-//      latest_can_rx.dlc = rx_header.DLC;
-//
-//      for (uint8_t i = 0; i < 8; i++)
-//      {
-//        latest_can_rx.data[i] = rx_data[i];
-//      }
-//
-//      latest_can_rx.count++;
-//      latest_can_rx.new_msg = 1;
-//
-//      SunRaw_UpdateFromCAN(latest_can_rx.id,
-//                                 latest_can_rx.dlc,
-//                                 rx_data);
-//      StatusLed_RequestPulse(STATUS_CAN_RX);
-//    }
-//  }
-//}
-
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
   if (hcan->Instance != CAN1)
@@ -2599,8 +3109,57 @@ static uint32_t CAN_MakeU32_LE(const uint8_t *data)
          ((uint32_t)data[3] << 24);
 }
 
+static float CAN_U32ToFloat(uint32_t raw)
+{
+  /*
+   * Motor-controller velocity is currently assumed to be an IEEE-754 float
+   * packed into one CAN word.  If the controller uses scaled integers instead,
+   * change this conversion and VehicleSpeed_UpdateFromCANVelocity().
+   */
+  float value;
+
+  memcpy(&value, &raw, sizeof(value));
+  return value;
+}
+
+static void VehicleSpeed_UpdateFromCANVelocity(uint32_t id, uint32_t velocity_word)
+{
+  /*
+   * Decode MC1VEL/MC2VEL high word as meters/second, normalize to mph, then
+   * mark it fresh for CAN_SPEED_VALID_MS.  Absolute value is used because
+   * display speed is usually non-directional here.
+   */
+  float velocity_mps = CAN_U32ToFloat(velocity_word);
+  float speed_mph;
+
+  if (!isfinite(velocity_mps))
+  {
+    return;
+  }
+
+  speed_mph = fabsf(velocity_mps) * MPS_TO_MPH;
+
+  if (speed_mph > CAN_SPEED_MAX_ABS_MPH)
+  {
+    return;
+  }
+
+  latest_can_speed_mph = speed_mph;
+  latest_can_speed_valid = 1;
+  latest_can_speed_ms = HAL_GetTick();
+  latest_can_speed_source =
+      (id == (MC_CAN_BASE1 + MC_VELOCITY)) ? "CAN_MC1" : "CAN_MC2";
+
+  VehicleSpeed_UpdateFromSources();
+}
+
 static void SunRaw_UpdateFromCAN(uint32_t id, uint8_t dlc, const uint8_t *data)
 {
+  /*
+   * Store raw CAN payloads for RS232 legacy display.  The table keeps high/low
+   * words exactly as hexadecimal so external display code can decode whatever
+   * packet-specific units it needs.
+   */
   if ((data == NULL) || (dlc < 8))
   {
     return;
@@ -2619,6 +3178,13 @@ static void SunRaw_UpdateFromCAN(uint32_t id, uint8_t dlc, const uint8_t *data)
       sun_raw_table[i].valid = 1;
       sun_raw_table[i].rx_count++;
       sun_raw_table[i].last_ms = HAL_GetTick();
+
+      if ((id == (MC_CAN_BASE1 + MC_VELOCITY)) ||
+          (id == (MC_CAN_BASE2 + MC_VELOCITY)))
+      {
+        VehicleSpeed_UpdateFromCANVelocity(id, sun_raw_table[i].high_word);
+      }
+
       return;
     }
   }
@@ -2626,6 +3192,11 @@ static void SunRaw_UpdateFromCAN(uint32_t id, uint8_t dlc, const uint8_t *data)
 
 static int SunRaw_BuildBlock(char *out, size_t out_len)
 {
+  /*
+   * Build the complete RS232 block in memory first, then transmit it once.
+   * This avoids interleaving partial lines with other UART/debug output and
+   * lets us bail out if the block would exceed SUN_RAW_BLOCK_LEN.
+   */
   size_t pos = 0;
   DateTime_t dt = {0};
   char time_text[40] = "RTC_READ_FAIL";
@@ -2725,46 +3296,26 @@ static int SunRaw_BuildBlock(char *out, size_t out_len)
 
   VehicleSpeed_UpdateFromSources();
 
-  written = snprintf(&out[pos], out_len - pos,
-                     "IMU,MOTION_MPH=%.2f\r\n",
-                     latest_imu_mph);
-  if (written < 0) return -1;
-  pos += (size_t)written;
+  /*
+   * NAV is the compact display line for RS232.  CAN speed is not repeated here
+   * because MC1VEL/MC2VEL already carry the raw hexadecimal velocity packet
+   * above; VEHICLE_MPH reflects whichever source currently wins arbitration.
+   */
+  uint32_t gps_fix_age_ms = latest_gps_fix_valid ?
+                            (HAL_GetTick() - latest_gps_fix_ms) :
+                            0UL;
 
   written = snprintf(&out[pos], out_len - pos,
-                     "SPEED,GPS_MPH=%.2f,GPS_VALID=%u,VEHICLE_MPH=%.2f,SOURCE=%s\r\n",
+                     "NAV,IMU_MPH=%.2f,GPS_MPH=%.2f,GPS_VALID=%u,VEHICLE_MPH=%.2f,SOURCE=%s,LAT=%.6f,LON=%.6f,FIX=%u,AGE_MS=%lu\r\n",
+                     latest_imu_mph,
                      latest_gps_speed_mph,
                      latest_gps_speed_valid,
                      latest_vehicle_speed_mph,
-                     latest_vehicle_speed_source);
-  if (written < 0) return -1;
-  pos += (size_t)written;
-
-  written = snprintf(&out[pos], out_len - pos,
-                     "GPS,%s\r\n",
-                     latest_gps_sentence[0] ? latest_gps_sentence : "NO_GPS");
-  if (written < 0) return -1;
-  pos += (size_t)written;
-
-  char raw_can_text[32] = "NO_CAN";
-  STM32_CAN_Rx_t can_snapshot;
-
-  __disable_irq();
-  can_snapshot = latest_can_rx;
-  __enable_irq();
-
-  CAN_DataToHex(can_snapshot.data,
-                can_snapshot.dlc,
-                raw_can_text,
-                sizeof(raw_can_text));
-
-  written = snprintf(&out[pos], out_len - pos,
-                     "CANRAW,count=%lu,id=0x%03lX,ext=%u,dlc=%u,data=%s\r\n",
-                     (unsigned long)can_snapshot.count,
-                     (unsigned long)can_snapshot.id,
-                     can_snapshot.is_extended,
-                     can_snapshot.dlc,
-                     raw_can_text);
+                     latest_vehicle_speed_source,
+                     latest_gps_lat_deg,
+                     latest_gps_lon_deg,
+                     latest_gps_fix_valid,
+                     (unsigned long)gps_fix_age_ms);
   if (written < 0) return -1;
   pos += (size_t)written;
 
@@ -3151,84 +3702,117 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
+  	    /*
+  	     * Service nonblocking SPI completions first on every loop pass.
+  	     * GPS and ESP32 use interrupt-driven transfers; these calls process
+  	     * completed transfers, handle timeouts, and keep buffers moving.
+  	     */
   	    GPS_ServiceSPI();
   	    ESP32_ServiceSPI();
 
   	    /*
-  	     * IMU + SD + ESP32 telemetry task
-  	     * Runs once per second.
+  	     * IMU task
+  	     * Samples at 10 Hz for velocity integration, but only emits the larger
+  	     * SD/ESP32/debug telemetry once per second.
   	     */
-  	    static uint32_t last_imu_log = 0;
+  	    static uint32_t last_imu_sample = 0;
+  	    static uint32_t last_telemetry_log = 0;
 
-  	    if ((HAL_GetTick() - last_imu_log) >= 1000)
+  	    if ((HAL_GetTick() - last_imu_sample) >= IMU_SAMPLE_PERIOD_MS)
   	    {
-  	      last_imu_log = HAL_GetTick();
+  	      uint32_t imu_now_ms = HAL_GetTick();
+  	      uint8_t telemetry_due =
+  	          ((imu_now_ms - last_telemetry_log) >= TELEMETRY_PERIOD_MS);
+
+  	      last_imu_sample = imu_now_ms;
+
+  	      if (telemetry_due)
+  	      {
+  	        last_telemetry_log = imu_now_ms;
+  	      }
 
   	      if (bmi_result == BMI2_OK)
   	      {
+  	        /*
+  	         * Read one accelerometer+gyro sample.  Every sample updates IMU
+  	         * integrated speed; only telemetry_due samples are printed/logged.
+  	         */
   	        struct bmi2_sens_data sensor_data = { 0 };
 
   	        int8_t rslt = bmi2_get_sensor_data(&sensor_data, &bmi);
 
   	        if (rslt == BMI2_OK)
   	        {
-  	          int16_t ax = sensor_data.acc.x;
-  	          int16_t ay = sensor_data.acc.y;
-  	          int16_t az = sensor_data.acc.z;
+  	          if (telemetry_due)
+  	          {
+  	            int16_t ax = sensor_data.acc.x;
+  	            int16_t ay = sensor_data.acc.y;
+  	            int16_t az = sensor_data.acc.z;
 
-  	          int16_t gx = sensor_data.gyr.x;
-  	          int16_t gy = sensor_data.gyr.y;
-  	          int16_t gz = sensor_data.gyr.z;
+  	            int16_t gx = sensor_data.gyr.x;
+  	            int16_t gy = sensor_data.gyr.y;
+  	            int16_t gz = sensor_data.gyr.z;
 
-  	          int32_t ax_mg = raw_acc_to_mg(ax);
-  	          int32_t ay_mg = raw_acc_to_mg(ay);
-  	          int32_t az_mg = raw_acc_to_mg(az);
+  	            int32_t ax_mg = raw_acc_to_mg(ax);
+  	            int32_t ay_mg = raw_acc_to_mg(ay);
+  	            int32_t az_mg = raw_acc_to_mg(az);
 
-  	          int32_t gx_mdps = raw_gyro_to_mdps(gx);
-  	          int32_t gy_mdps = raw_gyro_to_mdps(gy);
-  	          int32_t gz_mdps = raw_gyro_to_mdps(gz);
+  	            int32_t gx_mdps = raw_gyro_to_mdps(gx);
+  	            int32_t gy_mdps = raw_gyro_to_mdps(gy);
+  	            int32_t gz_mdps = raw_gyro_to_mdps(gz);
 
-  	          printf("ACC raw: X=%6d Y=%6d Z=%6d | ACC mg: X=%6ld Y=%6ld Z=%6ld | "
-  	                 "GYR raw: X=%6d Y=%6d Z=%6d | GYR mdps: X=%7ld Y=%7ld Z=%7ld\r\n",
-  	                 ax, ay, az,
-  	                 (long)ax_mg, (long)ay_mg, (long)az_mg,
-  	                 gx, gy, gz,
-  	                 (long)gx_mdps, (long)gy_mdps, (long)gz_mdps);
+  	            printf("ACC raw: X=%6d Y=%6d Z=%6d | ACC mg: X=%6ld Y=%6ld Z=%6ld | "
+  	                   "GYR raw: X=%6d Y=%6d Z=%6d | GYR mdps: X=%7ld Y=%7ld Z=%7ld\r\n",
+  	                   ax, ay, az,
+  	                   (long)ax_mg, (long)ay_mg, (long)az_mg,
+  	                   gx, gy, gz,
+  	                   (long)gx_mdps, (long)gy_mdps, (long)gz_mdps);
+  	          }
 
-  	          BMI270_UpdateVelocityAndPrint(&sensor_data);
+  	          BMI270_UpdateVelocityAndPrint(&sensor_data, telemetry_due);
 
-  	          /*
-  	           * Logs one telemetry row to SD.
-  	           * This row includes the latest CAN snapshot, BME values, GPS sentence,
-  	           * RTC values, and IMU values.
-  	           */
-  	          SD_LogIMUAndGPS(&sensor_data);
+  	          if (telemetry_due)
+  	          {
+  	            /*
+  	             * Logs one telemetry row to SD.
+  	             * This row includes the latest CAN snapshot, BME values, parsed
+  	             * GPS fix/speed, RTC values, and IMU values.
+  	            */
+  	            SD_LogIMUAndGPS(&sensor_data);
 
-  	          /*
-  	           * Sends the same telemetry row to the ESP32 if READY is active.
-  	           */
-  	          ESP32_SendTelemetry(&sensor_data);
+  	            /*
+  	             * Sends the same telemetry row to the ESP32 if READY is active.
+  	             */
+  	            ESP32_SendTelemetry(&sensor_data);
+  	          }
   	        }
   	        else
   	        {
-  	          printf("bmi2_get_sensor_data failed: %d\r\n", rslt);
+  	          if (telemetry_due)
+  	          {
+  	            printf("bmi2_get_sensor_data failed: %d\r\n", rslt);
+  	          }
   	          StatusLed_SetError();
   	        }
   	      }
   	      else
   	      {
-  	        printf("BMI270 not initialized. result = %d\r\n", bmi_result);
+  	        if (telemetry_due)
+  	        {
+  	          printf("BMI270 not initialized. result = %d\r\n", bmi_result);
+  	        }
   	        StatusLed_SetError();
   	      }
   	    }
 
   	    /*
   	     * GPS task
-  	     * Runs every 500 ms.
+  	     * Starts frequent SPI reads to keep the GPS output buffer drained.
+  	     * GPS_ServiceSPI() above parses completed blocks from the byte ring.
   	     */
   	    static uint32_t last_gps_read = 0;
 
-  	    if ((HAL_GetTick() - last_gps_read) >= 500)
+  	    if ((HAL_GetTick() - last_gps_read) >= GPS_POLL_PERIOD_MS)
   	    {
   	      last_gps_read = HAL_GetTick();
   	      GPS_PollSPI();
@@ -3248,6 +3832,10 @@ int main(void)
 
   	    static uint32_t last_can_test = 0;
 
+  	    /*
+  	     * Local CAN test frame.  This is useful for bus bring-up, but on a real
+  	     * vehicle it can be disabled if it creates unwanted traffic.
+  	     */
   	    if ((HAL_GetTick() - last_can_test) >= 1000)
   	    {
   	      last_can_test = HAL_GetTick();
@@ -3260,7 +3848,7 @@ int main(void)
 
   	    /*
   	     * RS232 raw_data output task
-  	     * Runs based on SUN_RAW_SEND_PERIOD_MS.
+  	     * Sends the legacy CAN hex table plus BME/NAV/time summary at 115200.
   	     */
   	    static uint32_t last_sun_raw_send = 0;
 
@@ -3278,9 +3866,9 @@ int main(void)
 
   	    /*
   	     * CAN print task
-  	     * Prints newest CAN frame if one arrived.
+  	     * Poll all pending frames so the CAN FIFO does not back up, then print
+  	     * the newest frame for SWV/debug visibility.
   	     */
-  //	    STM32_CAN_PrintLatest();
   	    STM32_CAN_PollRx();
   	    STM32_CAN_PrintLatest();
 
@@ -3294,7 +3882,8 @@ int main(void)
 
   	    /*
   	     * LED heartbeat/activity task
-  	     * Must run often so pulses are visible.
+  	     * Must run often so short status pulses are visible and error blink
+  	     * timing remains stable.
   	     */
   	    StatusLed_Task();
 
@@ -3545,7 +4134,7 @@ static void MX_SPI2_Init(void)
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -3690,17 +4279,23 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(BME_CS_GPIO_Port, BME_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(BME_CS_GPIO_Port, BME_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(SDC_CS_GPIO_Port, SDC_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SDC_CS_GPIO_Port, SDC_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPS_RST_Pin|GPS_CS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPS_RST_GPIO_Port, GPS_RST_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPS_CS_GPIO_Port, GPS_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, LED1_Pin|LED2_Pin|LED3_Pin|LED4_Pin
-                          |LED5_Pin|LED6_Pin|LED7_Pin|ESP32_CS_Pin, GPIO_PIN_RESET);
+                          |LED5_Pin|LED6_Pin|LED7_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(ESP32_CS_GPIO_Port, ESP32_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOG, LED_Green_Pin|LED_Red_Pin, GPIO_PIN_RESET);

@@ -1,9 +1,5 @@
 Application/User/FATFS/Target/user_diskio.o: \
- E:/Programming_Folder/Stm32/Telemetry_Board/Telemetry_Reference/FATFS/Target/user_diskio.c \
- ../../Middlewares/Third_Party/FatFs/src/ff_gen_drv.h \
- ../../Middlewares/Third_Party/FatFs/src/diskio.h \
- ../../Middlewares/Third_Party/FatFs/src/integer.h \
- ../../Middlewares/Third_Party/FatFs/src/ff.h ../../FATFS/Target/ffconf.h \
+ C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/Telemetry_Reference/FATFS/Target/user_diskio.c \
  ../../Core/Inc/main.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h \
  ../../Core/Inc/stm32f4xx_hal_conf.h \
@@ -34,12 +30,11 @@ Application/User/FATFS/Target/user_diskio.o: \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h \
  ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_spi.h \
- ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
-../../Middlewares/Third_Party/FatFs/src/ff_gen_drv.h:
-../../Middlewares/Third_Party/FatFs/src/diskio.h:
-../../Middlewares/Third_Party/FatFs/src/integer.h:
-../../Middlewares/Third_Party/FatFs/src/ff.h:
-../../FATFS/Target/ffconf.h:
+ ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h \
+ ../../Middlewares/Third_Party/FatFs/src/ff_gen_drv.h \
+ ../../Middlewares/Third_Party/FatFs/src/diskio.h \
+ ../../Middlewares/Third_Party/FatFs/src/integer.h \
+ ../../Middlewares/Third_Party/FatFs/src/ff.h ../../FATFS/Target/ffconf.h
 ../../Core/Inc/main.h:
 ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h:
 ../../Core/Inc/stm32f4xx_hal_conf.h:
@@ -71,3 +66,8 @@ Application/User/FATFS/Target/user_diskio.o: \
 ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h:
 ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_spi.h:
 ../../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h:
+../../Middlewares/Third_Party/FatFs/src/ff_gen_drv.h:
+../../Middlewares/Third_Party/FatFs/src/diskio.h:
+../../Middlewares/Third_Party/FatFs/src/integer.h:
+../../Middlewares/Third_Party/FatFs/src/ff.h:
+../../FATFS/Target/ffconf.h:
