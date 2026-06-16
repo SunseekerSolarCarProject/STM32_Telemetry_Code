@@ -382,7 +382,7 @@ static uint32_t last_velocity_tick = 0;
 /*
  * GPS receive state.
  * SPI reads write into gps_spi_rx, then complete blocks are copied into the
- * ring buffer.  The NMEA parser drains the ring buffer later so short blocking
+ * ring buffer. The NMEA parser drains the ring buffer later so short blocking
  * work elsewhere does not immediately lose GPS bytes.
  */
 static char gps_nmea_buf[GPS_NMEA_BUF_LEN];
@@ -785,7 +785,7 @@ static const char *FatFs_ErrorString(FRESULT res)
 }
 
 static struct bmi2_dev bmi;
-static uint8_t bmi270_addr = 0x68;   // Your debug showed addr = 0x68
+static uint8_t bmi270_addr = 0x68;   // debug showed addr = 0x68
 
 static int8_t stm32_bmi2_i2c_read(uint8_t reg_addr,
                                   uint8_t *reg_data,
