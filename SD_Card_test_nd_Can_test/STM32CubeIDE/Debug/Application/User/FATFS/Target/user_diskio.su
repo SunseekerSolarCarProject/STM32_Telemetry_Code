@@ -1,0 +1,17 @@
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:91:13:SD_Select	8	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:97:13:SD_Deselect	8	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:103:16:SD_SPI_Transfer	32	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:122:13:SD_SPI_SetSpeed	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:129:16:SD_WaitReady	24	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:147:16:SD_SendCommand	24	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:170:16:SD_SendCommandRaw	24	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:221:16:SD_ReceiveDataBlock	32	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:252:16:SD_TransmitDataBlock	24	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:286:16:SD_ReadCsd	24	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:300:16:SD_GetSectorCount	40	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:332:20:SD_CardTypeName	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:390:9:USER_initialize	56	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:548:9:USER_status	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:570:9:USER_read	24	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:646:9:USER_write	24	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/SD_Card_test_nd_Can_test/FATFS/Target/user_diskio.c:737:9:USER_ioctl	24	static

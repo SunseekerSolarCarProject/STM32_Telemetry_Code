@@ -1,0 +1,65 @@
+!SESSION 2026-07-09 18:20:46.158 -----------------------------------------------
+eclipse.buildId=Version 1.17.0
+java.version=21.0.3
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Framework arguments:  -application org.eclipse.cdt.managedbuilder.core.headlessbuild -import C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\SD_Card_test_nd_Can_test\STM32CubeIDE -build SD_Card_test_nd_Can_test/Debug
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\SD_Card_test_nd_Can_test\.codex_build_ws -import C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\SD_Card_test_nd_Can_test\STM32CubeIDE -build SD_Card_test_nd_Can_test/Debug
+
+!ENTRY org.eclipse.cdt.core 1 0 2026-07-09 18:20:58.538
+!MESSAGE Indexed 'SD_Card_test_nd_Can_test' (27 sources, 92 headers) in 6.68 sec: 6,312 declarations; 32,306 references; 8 unresolved inclusions; 73 syntax errors; 1,419 unresolved names (3.5%)
+!SESSION 2026-07-09 18:21:37.083 -----------------------------------------------
+eclipse.buildId=Version 1.17.0
+java.version=21.0.3
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Framework arguments:  -application org.eclipse.cdt.managedbuilder.core.headlessbuild -import C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\SD_Card_test_nd_Can_test\STM32CubeIDE -build SD_Card_test_nd_Can_test/Debug
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\SD_Card_test_nd_Can_test\.codex_build_ws -import C:\Users\aweso\Downloads\sunseeker_projects_workspace\Programming\Stm32_code\SD_Card_test_nd_Can_test\STM32CubeIDE -build SD_Card_test_nd_Can_test/Debug
+
+!ENTRY org.eclipse.cdt.core 4 0 2026-07-09 18:21:39.705
+!MESSAGE Error: Cannot invoke "org.eclipse.core.variables.VariablesPlugin.getStringVariableManager()" because the return value of "org.eclipse.core.variables.VariablesPlugin.getDefault()" is null
+!STACK 0
+java.lang.NullPointerException: Cannot invoke "org.eclipse.core.variables.VariablesPlugin.getStringVariableManager()" because the return value of "org.eclipse.core.variables.VariablesPlugin.getDefault()" is null
+	at org.eclipse.cdt.managedbuilder.internal.core.Builder.getDefaultBuildPath(Builder.java:1812)
+	at org.eclipse.cdt.managedbuilder.internal.core.Builder.getBuildPath(Builder.java:1765)
+	at org.eclipse.cdt.managedbuilder.internal.dataprovider.BuildBuildData.getBuilderCWD(BuildBuildData.java:42)
+	at org.eclipse.cdt.core.settings.model.extension.impl.CDefaultBuildData.copySettingsFrom(CDefaultBuildData.java:56)
+	at org.eclipse.cdt.internal.core.settings.model.CBuildSettingCache.<init>(CBuildSettingCache.java:45)
+	at org.eclipse.cdt.internal.core.settings.model.CConfigurationDescriptionCache.copyBuildData(CConfigurationDescriptionCache.java:247)
+	at org.eclipse.cdt.core.settings.model.extension.impl.CDefaultConfigurationData.copySettingsFrom(CDefaultConfigurationData.java:110)
+	at org.eclipse.cdt.internal.core.settings.model.CConfigurationDescriptionCache.loadData(CConfigurationDescriptionCache.java:154)
+	at org.eclipse.cdt.internal.core.settings.model.CProjectDescription.loadDatas(CProjectDescription.java:199)
+	at org.eclipse.cdt.internal.core.settings.model.xml.XmlProjectDescriptionStorage.loadProjectDescription(XmlProjectDescriptionStorage.java:509)
+	at org.eclipse.cdt.internal.core.settings.model.xml.XmlProjectDescriptionStorage.getProjectDescription(XmlProjectDescriptionStorage.java:239)
+	at org.eclipse.cdt.internal.core.settings.model.CProjectDescriptionManager.getProjectDescriptionInternal(CProjectDescriptionManager.java:426)
+	at org.eclipse.cdt.internal.core.settings.model.CProjectDescriptionManager.getProjectDescription(CProjectDescriptionManager.java:408)
+	at org.eclipse.cdt.internal.core.settings.model.CProjectDescriptionManager.getProjectDescription(CProjectDescriptionManager.java:402)
+	at org.eclipse.cdt.internal.core.settings.model.CProjectDescriptionManager.getProjectDescription(CProjectDescriptionManager.java:395)
+	at org.eclipse.cdt.internal.core.model.CProject.computeSourceRoots(CProject.java:610)
+	at org.eclipse.cdt.internal.core.model.CProject.computeChildren(CProject.java:631)
+	at org.eclipse.cdt.internal.core.model.CProject.buildStructure(CProject.java:595)
+	at org.eclipse.cdt.internal.core.model.Openable.generateInfos(Openable.java:264)
+	at org.eclipse.cdt.internal.core.model.CElement.openWhenClosed(CElement.java:428)
+	at org.eclipse.cdt.internal.core.model.CElement.getElementInfo(CElement.java:306)
+	at org.eclipse.cdt.internal.core.model.CElement.getElementInfo(CElement.java:296)
+	at org.eclipse.cdt.internal.core.model.Parent.getChildren(Parent.java:57)
+	at org.eclipse.cdt.internal.core.model.CModelManager.create(CModelManager.java:295)
+	at org.eclipse.cdt.internal.core.model.CModelManager.create(CModelManager.java:272)
+	at org.eclipse.cdt.internal.core.model.DeltaProcessor.createElement(DeltaProcessor.java:90)
+	at org.eclipse.cdt.internal.core.model.DeltaProcessor.traverseDelta(DeltaProcessor.java:453)
+	at org.eclipse.cdt.internal.core.model.DeltaProcessor.traverseDelta(DeltaProcessor.java:471)
+	at org.eclipse.cdt.internal.core.model.DeltaProcessor.processResourceDelta(DeltaProcessor.java:433)
+	at org.eclipse.cdt.internal.core.model.CModelManager.resourceChanged(CModelManager.java:931)
+	at org.eclipse.core.internal.events.NotificationManager$1.run(NotificationManager.java:321)
+	at org.eclipse.core.runtime.SafeRunner.run(SafeRunner.java:47)
+	at org.eclipse.core.internal.events.NotificationManager.notify(NotificationManager.java:311)
+	at org.eclipse.core.internal.events.NotificationManager.broadcastChanges(NotificationManager.java:174)
+	at org.eclipse.core.internal.resources.Workspace.broadcastPostChange(Workspace.java:458)
+	at org.eclipse.core.internal.resources.Workspace.endOperation(Workspace.java:1586)
+	at org.eclipse.core.internal.resources.Resource.refreshLocal(Resource.java:1616)
+	at org.eclipse.cdt.internal.core.pdom.PDOMSetupJob.syncronizeProjectSettings(PDOMSetupJob.java:76)
+	at org.eclipse.cdt.internal.core.pdom.PDOMSetupJob.run(PDOMSetupJob.java:58)
+	at org.eclipse.core.internal.jobs.Worker.run(Worker.java:63)
+
+!ENTRY org.eclipse.core.resources 2 10035 2026-07-09 18:21:39.769
+!MESSAGE The workspace will exit with unsaved changes in this session.

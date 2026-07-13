@@ -1,0 +1,10 @@
+!SESSION 2026-07-11 20:10:10.356 -----------------------------------------------
+eclipse.buildId=Version 1.17.0
+java.version=21.0.3
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Framework arguments:  -application org.eclipse.cdt.managedbuilder.core.headlessbuild -import STM32CubeIDE -cleanBuild telemetry_adv_v1/Debug
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data .cubeide-workspace -import STM32CubeIDE -cleanBuild telemetry_adv_v1/Debug
+
+!ENTRY org.eclipse.cdt.core 1 0 2026-07-11 20:10:22.171
+!MESSAGE Indexed 'telemetry_adv_v1' (33 sources, 101 headers) in 6.66 sec: 8,371 declarations; 50,111 references; 0 unresolved inclusions; 1 syntax errors; 2 unresolved names (0.0034%)

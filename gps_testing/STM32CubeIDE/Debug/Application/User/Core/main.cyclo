@@ -1,0 +1,14 @@
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:108:13:SWV_SendChar	7
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:130:5:_write	2
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:142:13:GPS_UBX_ChecksumAdd	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:148:16:GPS_NMEA_ChecksumValid	18
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:197:13:GPS_RecordValidFrame	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:204:13:GPS_ProcessByte	25
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:343:13:GPS_Init	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:359:13:GPS_Task	5
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:396:13:StatusLED_Task	13
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:440:5:main	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:488:6:SystemClock_Config	3
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:540:13:MX_SPI2_Init	2
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:578:13:MX_GPIO_Init	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/gps_testing/Core/Src/main.c:657:6:Error_Handler	1

@@ -1,0 +1,3 @@
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/IMU_BME_Testing/Core/Src/stm32f4xx_hal_msp.c:63:6:HAL_MspInit	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/IMU_BME_Testing/Core/Src/stm32f4xx_hal_msp.c:86:6:HAL_SPI_MspInit	2
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/IMU_BME_Testing/Core/Src/stm32f4xx_hal_msp.c:124:6:HAL_SPI_MspDeInit	2

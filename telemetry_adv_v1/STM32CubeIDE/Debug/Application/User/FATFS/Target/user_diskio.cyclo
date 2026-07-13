@@ -1,0 +1,17 @@
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:95:13:SD_Select	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:101:13:SD_Deselect	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:107:16:SD_SPI_Transfer	3
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:126:13:SD_SPI_SetSpeed	1
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:133:16:SD_WaitReady	3
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:151:16:SD_SendCommand	3
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:174:16:SD_SendCommandRaw	8
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:225:16:SD_ReceiveDataBlock	5
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:256:16:SD_TransmitDataBlock	5
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:290:16:SD_ReadCsd	3
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:304:16:SD_GetSectorCount	4
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:336:20:SD_CardTypeName	6
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:394:9:USER_initialize	21
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:552:9:USER_status	2
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:574:9:USER_read	13
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:654:9:USER_write	16
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/FATFS/Target/user_diskio.c:749:9:USER_ioctl	7

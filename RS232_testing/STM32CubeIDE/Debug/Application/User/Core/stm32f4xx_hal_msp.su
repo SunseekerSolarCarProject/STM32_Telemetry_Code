@@ -1,0 +1,7 @@
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/RS232_testing/Core/Src/stm32f4xx_hal_msp.c:63:6:HAL_MspInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/RS232_testing/Core/Src/stm32f4xx_hal_msp.c:86:6:HAL_CAN_MspInit	48	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/RS232_testing/Core/Src/stm32f4xx_hal_msp.c:130:6:HAL_CAN_MspDeInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/RS232_testing/Core/Src/stm32f4xx_hal_msp.c:163:6:HAL_UART_MspInit	48	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/RS232_testing/Core/Src/stm32f4xx_hal_msp.c:200:6:HAL_UART_MspDeInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/RS232_testing/Core/Src/stm32f4xx_hal_msp.c:229:6:HAL_PCD_MspInit	48	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/RS232_testing/Core/Src/stm32f4xx_hal_msp.c:266:6:HAL_PCD_MspDeInit	16	static

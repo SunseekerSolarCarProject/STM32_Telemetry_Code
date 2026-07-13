@@ -13,6 +13,9 @@ The STM32 sends telemetry out in two main ways:
 2. To the RS232 port as a readable raw telemetry block for external displays,
    logging tools, or debugging.
 
+See [`SUNSEEKER_CAN_NETWORK.md`](SUNSEEKER_CAN_NETWORK.md) for the CAN network
+IDs, payload layout, speed decode notes, and Sunseeker RS232 row mapping.
+
 ## ESP32 / Bluetooth Telemetry
 
 The ESP32-C3 is connected to the STM32 over SPI. The STM32 sends framed text
@@ -166,4 +169,3 @@ raw CAN speed messages are already present in the fixed hexadecimal CAN rows,
 such as `MC1VEL` and `MC2VEL`. The `NAV` line keeps the display cleaner by
 showing IMU speed, GPS speed, selected vehicle speed, GPS position, and GPS fix
 status in one place.
-

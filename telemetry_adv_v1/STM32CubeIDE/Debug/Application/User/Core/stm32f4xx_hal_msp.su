@@ -1,0 +1,13 @@
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:63:6:HAL_MspInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:86:6:HAL_CAN_MspInit	48	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:130:6:HAL_CAN_MspDeInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:163:6:HAL_I2C_MspInit	48	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:206:6:HAL_I2C_MspDeInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:240:6:HAL_RTC_MspInit	64	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:274:6:HAL_RTC_MspDeInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:296:6:HAL_SPI_MspInit	72	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:428:6:HAL_SPI_MspDeInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:525:6:HAL_UART_MspInit	48	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:566:6:HAL_UART_MspDeInit	16	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:598:6:HAL_PCD_MspInit	48	static
+C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/telemetry_adv_v1/Core/Src/stm32f4xx_hal_msp.c:635:6:HAL_PCD_MspDeInit	16	static
