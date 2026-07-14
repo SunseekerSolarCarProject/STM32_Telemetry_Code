@@ -42,6 +42,13 @@ extern "C" {
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
 
+/*
+ * Standard 11-bit CAN identifier reserved for commands originating from the
+ * telemetry board.  Record this reservation in the vehicle-wide CAN matrix
+ * before another controller is assigned an ID in the 0x5C0 block.
+ */
+#define TELEMETRY_CAN_COMMAND_ID 0x5C0U
+
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/
@@ -53,6 +60,15 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+
+/*
+ * Queue one telemetry command without blocking. Byte 0 is the command code;
+ * zero to seven payload bytes follow in bytes 1..7. Multi-byte payload fields
+ * should be packed little-endian to match the rest of this project.
+ */
+HAL_StatusTypeDef Telemetry_CAN_SendCommand(uint8_t command,
+                                            const uint8_t *payload,
+                                            uint8_t payload_length);
 
 /* USER CODE END EFP */
 

@@ -1,3 +1,6 @@
+"./Application/User/Core/bme280.o"
+"./Application/User/Core/bmi2.o"
+"./Application/User/Core/bmi270.o"
 "./Application/User/Core/main.o"
 "./Application/User/Core/stm32f4xx_hal_msp.o"
 "./Application/User/Core/stm32f4xx_it.o"
