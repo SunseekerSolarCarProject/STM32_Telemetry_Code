@@ -1,6 +1,105 @@
 # STM32 Telemetry Firmware Code
 
-## Overview
+This repository contains the main Sunseeker STM32 telemetry firmware plus
+small hardware-test projects. Every firmware directory is a self-contained
+STM32CubeMX/CubeIDE project.
+
+## Quick start: GitHub to STM32CubeIDE
+
+### 1. Get the code
+
+Either clone the repository:
+
+```powershell
+git clone --depth 1 https://github.com/CagedMotion/STM32_Telemetry_Code.git
+```
+
+The shallow clone skips old generated binaries in the repository history. If
+you need the full commit history, omit `--depth 1`. Alternatively, select
+**Code > Download ZIP** on GitHub and extract the ZIP. Keep the
+repository's directory structure intact; the CubeIDE projects link to source
+files one directory above their `STM32CubeIDE` folders.
+
+### 2. Choose a project
+
+| Project directory | Target | Purpose |
+| --- | --- | --- |
+| `telemetry_adv_v2` | STM32F437VG/VI | Newest integrated telemetry revision; the normal starting point for current F437 hardware |
+| `telemetry_adv_v1` | STM32F437VG/VI | Previous integrated telemetry revision |
+| `Telemetry_Reference` | STM32F429ZI | Full reference implementation for the older F429 target |
+| `Blink_LED` | STM32F437VG/VI | LED bring-up test |
+| `esp32_testing` | STM32F437VG/VI | ESP32/SPI test |
+| `gps_testing` | STM32F437VG/VI | GPS test |
+| `IMU_BME_Testing` | STM32F437VG/VI | BMI270 and BME sensor test |
+| `RS232_testing` | STM32F437VG/VI | RS232 test |
+| `RTC_testing` | STM32F437VG/VI | Real-time-clock test |
+| `SD_Card_test_nd_Can_test` | STM32F437VG/VI | SD card and CAN test |
+
+The MCU target matters: do not flash the F429 `Telemetry_Reference` build to
+the F437 board.
+
+### 3. Import it into STM32CubeIDE
+
+1. Install STM32CubeIDE and open it with any workspace directory **outside this
+   repository**.
+2. Select **File > Import...**.
+3. Select **General > Existing Projects into Workspace**, then select **Next**.
+4. For **Select root directory**, browse to the chosen project's nested
+   `STM32CubeIDE` directory. For example:
+   `STM32_Telemetry_Code/telemetry_adv_v2/STM32CubeIDE`.
+5. Make sure the project is checked. Leave **Copy projects into workspace**
+   unchecked, then select **Finish**.
+
+Do not import the repository root or only the `.ioc` file. CubeIDE detects a
+project by the hidden `.project` and `.cproject` files inside each
+`STM32CubeIDE` directory.
+
+### 4. Build and flash
+
+1. Right-click the imported project and select **Clean Project**.
+2. Select **Project > Build Project** (or press `Ctrl+B`). CubeIDE recreates
+   the ignored `Debug` build directory locally.
+3. Connect the correct target through ST-LINK and supply target power.
+4. Select **Run > Debug As > STM32 C/C++ Application** to program and debug,
+   or **Run As > STM32 C/C++ Application** to program and run.
+
+If CubeIDE asks to migrate the project, allow it, then clean and rebuild. If
+linked files appear missing, remove the imported project from the workspace
+without deleting its contents and repeat the import from the nested
+`STM32CubeIDE` directory.
+
+### Editing the hardware configuration
+
+The `.ioc` file is stored at the top of each project directory, one level above
+`STM32CubeIDE`. It appears as a linked file after a correct import. Open it in
+CubeIDE to change pins or peripherals and regenerate code. Keep application
+changes inside CubeMX `USER CODE BEGIN` / `USER CODE END` sections so code
+generation does not overwrite them.
+
+## Repository layout
+
+```text
+STM32_Telemetry_Code/
+|-- README.md
+|-- SUNSEEKER_CAN_NETWORK.md
+|-- telemetry_adv_v2/
+|   |-- telemetry_adv_v2.ioc       # CubeMX hardware configuration
+|   |-- Core/                      # Application source and headers
+|   |-- Drivers/                   # STM32 HAL and CMSIS
+|   |-- FATFS/ and Middlewares/    # Filesystem support
+|   `-- STM32CubeIDE/              # Import this directory into CubeIDE
+|       |-- .project and .cproject # CubeIDE project metadata
+|       `-- Debug/                 # Local generated output; not committed
+|-- telemetry_adv_v1/
+|-- Telemetry_Reference/
+`-- *_testing/                     # Focused hardware-test projects
+```
+
+Generated `Debug` and `Release` directories are intentionally excluded from
+Git. A fresh GitHub download contains the source, libraries, linker scripts,
+launch configuration, `.ioc`, and CubeIDE metadata needed to rebuild them.
+
+## Firmware overview
 
 This workspace contains different versions of telemetry firmware for the STM32.
 The `Telemetry_Reference` project is the full reference firmware and is meant to

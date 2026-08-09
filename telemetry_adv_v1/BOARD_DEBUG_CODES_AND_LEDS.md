@@ -21,7 +21,7 @@ mean the output logic is inverted incorrectly.
 
 | LED | Color | GPIO | Meaning | Normal behavior |
 |---|---|---:|---|---|
-| LED5 | Yellow | PD14 | Fresh checksum-valid GPS navigation traffic | On while an RMC, GGA, or VTG sentence has arrived within 3 seconds. This does not by itself guarantee a position fix. |
+| LED5 | Yellow | PD14 | Fresh checksum-valid GPS navigation traffic | On while an RMC, GGA, VTG, or GSV sentence has arrived within 3 seconds. This does not by itself guarantee a position fix. |
 | LED6 | Yellow | PD13 | SD-card activity/status | Pulses for about 120 ms after a successful SD row write. It stays off when the card is absent, unmounted, logging is stopped, or a write fails. |
 | LED7 | Yellow | PD12 | CAN receive activity | Pulses for about 120 ms after a CAN frame is received. Solid/frequent light can be normal on a busy CAN bus. |
 | LED8 | Yellow | PD11 | RS-232 transmit activity | Pulses after the one-second RS-232 telemetry block completes. At a one-second interval, it should flash briefly once per second. |
@@ -62,8 +62,8 @@ Masks combine by addition/bitwise OR. Examples:
 repair hardware. Persistent faults set their bits again.
 
 GPS does not currently have its own red-error bit; use LED5 and the GPS status
-fields instead. The BME280 and external PCF85263A RTC are currently compiled
-off, so they also do not contribute to red LED 10.
+fields instead. The external PCF85263A RTC is enabled but does not currently
+have a red-error bit; use the RTC status fields. The BME280 is compiled off.
 
 ## General STM32 HAL status values
 
@@ -191,8 +191,8 @@ The `[ERROR FLAGS]` line includes `esp_result`:
 | `ERRORS_CLEARED` | Firmware error mask and selected counters were cleared |
 | `BAD_RTC_FORMAT` | `SET_RTC` syntax was not `YYYY-MM-DD,hh:mm:ss` |
 | `RTC_RANGE_INVALID` | Date/time values or calendar date are invalid |
-| `STM32_RTC_SET_FAILED` | Internal RTC could not be written |
-| `PCF85263A_SET_FAILED_INTERNAL_OK` | Optional external RTC failed, but STM32 RTC was set |
+| `RTC_SET_FAILED` | Active RTC could not be written; check PCF85263A/I2C1 |
+| `RTC_SET_PCF85263A` | External PCF85263A set successfully |
 | `RTC_SET_INTERNAL` | Internal STM32 RTC set successfully |
 | `RTC_SET_INTERNAL_AND_PCF85263A` | Both RTC devices set successfully |
 | `UNKNOWN_CMD` | Command verb is unsupported |
@@ -322,11 +322,19 @@ These are status indicators rather than red-LED error bits:
 | `FIX=1` | Fresh valid latitude/longitude fix is available |
 | `ELEV_VALID=1` | Fresh GGA mean-sea-level elevation is available |
 | `AGE_MS` / `ELEV_AGE_MS` | Age of the corresponding GPS solution |
+| `SATS_VISIBLE` | GPS satellites reported in view by the latest GP/GN GSV sentence; useful while searching for a fix |
+| `SATS_VISIBLE_VALID=1` | The visible-satellite count is no more than 5 seconds old |
+| `SATS_VISIBLE_AGE_MS` | Age of the most recent visible-satellite count |
+| `SATS_USED` | Satellites reported by GGA as participating in the navigation solution |
+| `SATS_USED_VALID=1` | The satellites-used count is no more than 5 seconds old |
+| `SATS_USED_AGE_MS` | Age of the most recent satellites-used count |
 | `checksum_err` | Count of failed NMEA checksums; intermittent growth suggests SPI/noise/data corruption |
-| `RTC_SOURCE=DEFAULT` | Firmware fallback date/time is in use |
-| `RTC_SOURCE=PRESERVED` | RTC backup-domain calendar survived reset |
-| `RTC_SOURCE=GPS_UTC` | GPS RMC synchronized the RTC |
+| `RTC_SOURCE=UNSYNCED` | External RTC has not supplied a valid calendar yet |
+| `RTC_SOURCE=PRESERVED` | PCF85263A retained a valid calendar across reset/power loss |
+| `RTC_SOURCE=GPS_UTC` | GPS RMC set or verified the external RTC |
 | `RTC_SOURCE=APP` | ESP32/Bluetooth app set the RTC |
+| `RTC_SYNC_VALID=1` | Most recent scheduled comparison with valid GPS UTC succeeded |
+| `RTC_DRIFT_S` | External RTC minus GPS UTC at the most recent check; correction occurs outside +/-2 seconds |
 | `IMU_G VALID=1` | Latest BMI270 sample is valid |
 | `CALIBRATED=1` | Gravity baseline and gyro calibration succeeded |
 | `MOUNT_VALID=1` | Calibration used the required installed orientation |

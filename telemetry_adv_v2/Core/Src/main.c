@@ -36,7 +36,7 @@
  * that device produces no I2C/SPI traffic and cannot raise an error LED.
  *
  * Before changing a switch to 1, first configure the matching bus and pins in
- * telemetry_adv_v1.ioc and add the Bosch .c files to the CubeIDE build:
+ * telemetry_adv_v2.ioc and add the Bosch .c files to the CubeIDE build:
  *   BMI270: SPI1 with IMU_CS (bmi270.h includes bmi2.h/bmi2_defs.h)
  *   BME280: SPI1 with BME_CS (bme280.h includes bme280_defs.h)
  *   RTC:    I2C1 for the external PCF85263A driver
@@ -72,15 +72,16 @@
  * Application overview
  * --------------------
  * - SPI2 reads the u-blox GPS and accepts only checksum-valid RMC/GGA/VTG data.
- * - SPI3 and FatFS append time-stamped CAN/GPS/speed snapshots to the SD card.
+ * - SPI3 and FatFS append coherent CAN frames plus GPS/IMU status to the SD card.
  * - SPI4 exchanges 768-byte ASCII telemetry/command frames with the ESP32.
  * - CAN1 receives all bus traffic and can queue telemetry commands on ID 0x5C0.
  * - USART1 sends the legacy raw_data block at 115200 baud.
  * - Optional SWV/ITM printf diagnostics never mix with USART1 telemetry.
  *
  * The external PCF85263A RTC is active. A valid GPS RMC sentence sets it from
- * UTC after boot; hourly checks correct it when drift exceeds two seconds.
- * SET_RTC from the ESP32/app can also set it. The BMI270 is calibrated and
+ * UTC after boot; minute checks correct it when drift exceeds two seconds.
+ * SET_RTC from the ESP32/app is treated as UTC and GPS verifies it immediately.
+ * The BMI270 is calibrated and
  * sampled at 100 Hz. BME280 access remains disabled until enabled.
  *
  * Transfer/interrupt policy
@@ -110,7 +111,11 @@ typedef struct
   uint32_t tick_ms;     /* HAL tick when this frame was received. */
   uint32_t count;       /* Total frames received since boot. */
   uint32_t id;          /* 11-bit standard or 29-bit extended CAN ID. */
+  uint32_t hw_timestamp;/* bxCAN receive timestamp from the HAL header. */
+  uint32_t filter_match_index; /* Hardware filter bank that accepted it. */
+  uint32_t dropped;     /* Queue-overflow count observed before this frame. */
   uint8_t extended;     /* 0=standard ID, 1=extended ID. */
+  uint8_t remote;       /* 0=data frame, 1=remote-transmission request. */
   uint8_t dlc;          /* Number of valid payload bytes, limited to 0..8. */
   uint8_t data[8];      /* Unmodified CAN payload bytes. */
 } CAN_Snapshot_t;
@@ -178,6 +183,13 @@ typedef struct
 #define ACTIVITY_PULSE_MS              120U
 #define TELEMETRY_PERIOD_MS            1000U
 #define SD_RETRY_PERIOD_MS             2000U
+#define CAN_RX_QUEUE_CAPACITY          512U
+#define CAN_LOG_ROWS_PER_TASK          64U
+#define CAN_LOG_SYNC_PERIOD_MS         1000U
+#if ((CAN_RX_QUEUE_CAPACITY == 0U) || \
+     ((CAN_RX_QUEUE_CAPACITY & (CAN_RX_QUEUE_CAPACITY - 1U)) != 0U))
+#error "CAN_RX_QUEUE_CAPACITY must be a nonzero power of two"
+#endif
 #define GPS_POLL_PERIOD_MS             20U
 #define GPS_VALID_TIMEOUT_MS           3000U
 #define GPS_SPI_BLOCK_SIZE             256U
@@ -186,7 +198,7 @@ typedef struct
 #define GPS_FIX_VALID_MS               5000U
 #define GPS_SATELLITE_VALID_MS         5000U
 #define GPS_NAV_PRINT_PERIOD_MS        1000U
-#define GPS_RTC_SYNC_PERIOD_MS         3600000U
+#define GPS_RTC_SYNC_PERIOD_MS         60000U
 #define GPS_RTC_MAX_DRIFT_SECONDS      2L
 #define KNOTS_TO_MPH                   1.15077945f
 #define KMH_TO_MPH                     0.62137119f
@@ -278,6 +290,11 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 static volatile CAN_Snapshot_t can_latest;
+static CAN_Snapshot_t can_rx_queue[CAN_RX_QUEUE_CAPACITY];
+static volatile uint16_t can_rx_queue_head;
+static volatile uint16_t can_rx_queue_tail;
+static volatile uint32_t can_rx_queue_dropped;
+static volatile uint32_t can_rx_count;
 /* "until" values are HAL tick deadlines used to make short activity pulses. */
 static volatile uint32_t can_led_until;
 static uint32_t rs232_led_until;
@@ -289,6 +306,9 @@ static volatile uint32_t error_flags;
 static uint8_t sd_ready;
 static uint8_t sd_logging_enabled = 1U;
 static uint32_t sd_last_attempt_ms;
+static FIL can_log_file;
+static uint8_t can_log_file_open;
+static uint32_t can_log_last_sync_ms;
 
 /* GPS parser state and the most recent filtered navigation solution. */
 static uint8_t gps_tx[GPS_SPI_BLOCK_SIZE];
@@ -306,6 +326,7 @@ static uint32_t gps_rtc_check_count;
 static uint32_t gps_rtc_sync_count;
 static int32_t gps_rtc_last_drift_seconds;
 static uint8_t gps_rtc_sync_valid;
+static uint8_t gps_rtc_force_check;
 static float latest_gps_lat_deg;
 static float latest_gps_lon_deg;
 static float latest_gps_speed_mph;
@@ -456,11 +477,17 @@ static void MX_SPI1_Init(void);
 static void LED_Write(GPIO_TypeDef *port, uint16_t pin, uint8_t on);
 static HAL_StatusTypeDef CAN_StartListenAll(void);
 static void CAN_Drain(void);
+static uint8_t CAN_CopyLatest(CAN_Snapshot_t *snapshot);
+static uint8_t CAN_QueuePop(CAN_Snapshot_t *snapshot);
+static void CAN_QueueReset(void);
 #if ENABLE_SWV_DEBUG_OUTPUT
 static void CAN_SWV_Task(void);
 #endif
 static void SD_Task(void);
 static void SD_LogSnapshot(void);
+static FRESULT SD_CANLogOpen(void);
+static void SD_CANLogClose(void);
+static FRESULT SD_CANLogTask(void);
 static void GPS_Task(void);
 static uint8_t GPS_GetField(const char *sentence, uint8_t field_index,
                             char *out, size_t out_len);
@@ -681,7 +708,8 @@ static void TelemetryDateTime_Format(const TelemetryDateTime_t *date_time,
     (void)snprintf(out, out_len, "RTC_READ_FAIL");
     return;
   }
-  (void)snprintf(out, out_len, "%04u-%02u-%02uT%02u:%02u:%02u",
+  /* RFC 3339 "Z" makes the stored UTC basis unambiguous to every consumer. */
+  (void)snprintf(out, out_len, "%04u-%02u-%02uT%02u:%02u:%02uZ",
                  date_time->year, date_time->month, date_time->day,
                  date_time->hour, date_time->minute, date_time->second);
 }
@@ -825,37 +853,103 @@ static void VehicleSpeed_UpdateFromSources(void)
 
 static void CAN_Store(const CAN_RxHeaderTypeDef *header, const uint8_t *data)
 {
-  /* Cache the newest frame for diagnostics/logging and update the legacy table. */
-  uint32_t id = (header->IDE == CAN_ID_STD) ? header->StdId : header->ExtId;
-  can_latest.tick_ms = HAL_GetTick();
-  can_latest.count++;
-  can_latest.id = id;
-  can_latest.extended = (header->IDE == CAN_ID_EXT) ? 1U : 0U;
-  can_latest.dlc = (header->DLC > 8U) ? 8U : (uint8_t)header->DLC;
-  memcpy((void *)can_latest.data, data, can_latest.dlc);
+  /*
+   * Build the complete frame locally before publishing it.  The main loop
+   * never reads fields directly while this ISR is changing them: it either
+   * copies can_latest with interrupts briefly masked or pops one complete
+   * queue entry.  This keeps ID, frame type, DLC, and payload associated.
+   */
+  CAN_Snapshot_t frame = {0};
+  frame.tick_ms = HAL_GetTick();
+  frame.count = ++can_rx_count;
+  frame.id = (header->IDE == CAN_ID_STD) ? header->StdId : header->ExtId;
+  frame.hw_timestamp = header->Timestamp;
+  frame.filter_match_index = header->FilterMatchIndex;
+  frame.extended = (header->IDE == CAN_ID_EXT) ? 1U : 0U;
+  frame.remote = (header->RTR == CAN_RTR_REMOTE) ? 1U : 0U;
+  frame.dlc = (header->DLC > 8U) ? 8U : (uint8_t)header->DLC;
+  memcpy(frame.data, data, frame.dlc);
+
+  uint16_t head = can_rx_queue_head;
+  uint16_t next = (uint16_t)((head + 1U) & (CAN_RX_QUEUE_CAPACITY - 1U));
+  uint8_t queue_has_room = (next != can_rx_queue_tail) ? 1U : 0U;
+  if (queue_has_room == 0U)
+  {
+    can_rx_queue_dropped++;
+  }
+  frame.dropped = can_rx_queue_dropped;
+  can_latest = frame;
+
+  if (queue_has_room != 0U)
+  {
+    can_rx_queue[head] = frame;
+    __DMB();
+    can_rx_queue_head = next;
+  }
+
   can_led_until = HAL_GetTick() + ACTIVITY_PULSE_MS;
   SetError(ERROR_CAN, 0U);
 
-  if ((header->IDE == CAN_ID_STD) && (header->DLC >= 8U))
+  if ((frame.extended == 0U) && (frame.remote == 0U) && (frame.dlc >= 8U))
   {
-    if ((id == MC1_VELOCITY_CAN_ID) || (id == MC2_VELOCITY_CAN_ID))
-      VehicleSpeed_UpdateFromCAN(id, MakeU32LE(&data[4]));
+    if ((frame.id == MC1_VELOCITY_CAN_ID) ||
+        (frame.id == MC2_VELOCITY_CAN_ID))
+      VehicleSpeed_UpdateFromCAN(frame.id, MakeU32LE(&frame.data[4]));
 
     /* Extended IDs and short frames can still be logged, but cannot fill the
        legacy table because its rows require an exact 8-byte standard frame. */
     for (uint32_t i = 0U; i < SUN_RAW_TABLE_COUNT; i++)
     {
-      if (sun_raw_table[i].can_id == id)
+      if (sun_raw_table[i].can_id == frame.id)
       {
         /* Store each 32-bit half as little-endian: byte 0 is the least
            significant byte of LOW and byte 4 is the least significant of HIGH. */
-        sun_raw_table[i].low_word = MakeU32LE(&data[0]);
-        sun_raw_table[i].high_word = MakeU32LE(&data[4]);
+        sun_raw_table[i].low_word = MakeU32LE(&frame.data[0]);
+        sun_raw_table[i].high_word = MakeU32LE(&frame.data[4]);
         sun_raw_table[i].valid = 1U;
         break;
       }
     }
   }
+}
+
+static uint8_t CAN_CopyLatest(CAN_Snapshot_t *snapshot)
+{
+  if (snapshot == NULL) return 0U;
+
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  *snapshot = can_latest;
+  __set_PRIMASK(primask);
+  return (snapshot->count != 0U) ? 1U : 0U;
+}
+
+static uint8_t CAN_QueuePop(CAN_Snapshot_t *snapshot)
+{
+  if (snapshot == NULL) return 0U;
+
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  uint16_t tail = can_rx_queue_tail;
+  if (tail == can_rx_queue_head)
+  {
+    __set_PRIMASK(primask);
+    return 0U;
+  }
+
+  *snapshot = can_rx_queue[tail];
+  can_rx_queue_tail =
+      (uint16_t)((tail + 1U) & (CAN_RX_QUEUE_CAPACITY - 1U));
+  __set_PRIMASK(primask);
+  return 1U;
+}
+
+static void CAN_QueueReset(void)
+{
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  can_rx_queue_tail = can_rx_queue_head;
+  __set_PRIMASK(primask);
 }
 
 /*
@@ -1713,23 +1807,16 @@ static void CAN_SWV_Task(void)
   static uint32_t last_print_count;
   uint32_t now = HAL_GetTick();
 
-  if ((can_latest.count != last_print_count) &&
+  if ((can_rx_count != last_print_count) &&
       ((now - last_print_ms) >= CAN_SWV_MIN_PERIOD_MS))
   {
-    CAN_Snapshot_t snapshot;
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    snapshot.tick_ms = can_latest.tick_ms;
-    snapshot.count = can_latest.count;
-    snapshot.id = can_latest.id;
-    snapshot.extended = can_latest.extended;
-    snapshot.dlc = can_latest.dlc;
-    for (uint8_t i = 0U; i < 8U; i++) snapshot.data[i] = can_latest.data[i];
-    __set_PRIMASK(primask);
+    CAN_Snapshot_t snapshot = {0};
+    if (CAN_CopyLatest(&snapshot) == 0U) return;
 
-    printf("[CAN RX] count=%lu skipped=%lu id=0x%lX type=%s dlc=%u data=",
+    printf("[CAN RX] count=%lu skipped=%lu id=0x%lX type=%s rtr=%u dlc=%u data=",
            snapshot.count, snapshot.count - last_print_count - 1U,
-           snapshot.id, snapshot.extended ? "EXT" : "STD", snapshot.dlc);
+           snapshot.id, snapshot.extended ? "EXT" : "STD",
+           snapshot.remote, snapshot.dlc);
     for (uint8_t i = 0U; i < snapshot.dlc; i++)
       printf("%02X%s", snapshot.data[i], (i + 1U < snapshot.dlc) ? " " : "");
     printf(" age=%lu ms\r\n", now - snapshot.tick_ms);
@@ -1742,8 +1829,9 @@ static void CAN_SWV_Task(void)
   if ((now - last_status_ms) >= CAN_SWV_STATUS_PERIOD_MS)
   {
     last_status_ms = now;
-    printf("[CAN STATUS] rx=%lu state=%lu hal_error=0x%08lX ESR=0x%08lX\r\n",
-           can_latest.count, (uint32_t)HAL_CAN_GetState(&hcan1),
+    printf("[CAN STATUS] rx=%lu queue_dropped=%lu state=%lu hal_error=0x%08lX ESR=0x%08lX\r\n",
+           can_rx_count, can_rx_queue_dropped,
+           (uint32_t)HAL_CAN_GetState(&hcan1),
            HAL_CAN_GetError(&hcan1), hcan1.Instance->ESR);
   }
 }
@@ -1844,10 +1932,20 @@ static void SD_LogSnapshot(void)
    * but make a completed row much more likely to survive unexpected power
    * loss, which is important for vehicle telemetry.
    */
-  /* New filename prevents the expanded IMU rows mixing with an older header. */
-  static const char path[] = "0:/TELIMU2.CSV";
+  /*
+   * Copy the complete interrupt-owned CAN frame before doing any filesystem,
+   * RTC, or formatting work. Every CAN column below comes from this one local
+   * object, so a later CAN interrupt cannot pair a new ID with old data.
+   */
+  CAN_Snapshot_t can_snapshot = {0};
+  (void)CAN_CopyLatest(&can_snapshot);
+
+  /* New filename prevents V2 rows mixing with an older V1 header. */
+  static const char path[] = "0:/TELV2.CSV";
   static const char header[] =
-      "tick_ms,stm32_rtc,rtc_valid,can_count,can_id,extended,dlc,data,gps_fix_valid,"
+      "log_tick_ms,rtc_utc,rtc_valid,can_rx_tick_ms,can_count,can_id,"
+      "can_hw_timestamp,can_filter_match_index,extended,rtr,dlc,data,"
+      "can_queue_dropped,gps_fix_valid,"
       "gps_lat_deg,gps_lon_deg,gps_speed_valid,gps_speed_mph,"
       "vehicle_speed_mph,vehicle_speed_source,"
       "imu_speed_mph,imu_forward_accel_mg,"
@@ -1873,8 +1971,8 @@ static void SD_LogSnapshot(void)
       /* A newly-created file gets column names before its first data row. */
       result = f_write(&USERFile, header, sizeof(header) - 1U, &written);
     if (result == FR_OK) result = f_lseek(&USERFile, f_size(&USERFile));
-    for (uint8_t i = 0U; i < can_latest.dlc && i < 8U; i++)
-      (void)snprintf(&hex[i * 2U], 3U, "%02X", can_latest.data[i]);
+    for (uint8_t i = 0U; i < can_snapshot.dlc; i++)
+      (void)snprintf(&hex[i * 2U], 3U, "%02X", can_snapshot.data[i]);
     FormatSignedFixed6(latest_gps_lat_deg, lat, sizeof(lat));
     FormatSignedFixed6(latest_gps_lon_deg, lon, sizeof(lon));
     (void)TelemetryRTC_Read(&date_time);
@@ -1889,14 +1987,16 @@ static void SD_LogSnapshot(void)
         (HAL_GetTick() - imu_telemetry.sample_ms) : 0U;
     uint32_t imu_peak_window_g_mg = imu_telemetry.peak_window_g_mg;
     if (result == FR_OK && f_printf(&USERFile,
-        "%lu,%s,%u,%lu,0x%lX,%u,%u,%s,%u,%s,%s,%u,%lu.%02lu,"
+        "%lu,%s,%u,%lu,%lu,0x%lX,%lu,%lu,%u,%u,%u,%s,%lu,%u,%s,%s,%u,%lu.%02lu,"
         "%lu.%02lu,%s,%lu.%02lu,%ld,%u,%u,%u,%lu,%lu,%lu,%lu,"
         "%d,%d,%d,%d,%d,%d,"
         "%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,"
         "%lu,%lu,%lu,%lu\r\n",
         HAL_GetTick(), rtc_text, date_time.valid,
-        can_latest.count, can_latest.id, can_latest.extended,
-        can_latest.dlc, hex, latest_gps_fix_valid, lat, lon,
+        can_snapshot.tick_ms, can_snapshot.count, can_snapshot.id,
+        can_snapshot.hw_timestamp, can_snapshot.filter_match_index,
+        can_snapshot.extended, can_snapshot.remote, can_snapshot.dlc, hex,
+        can_snapshot.dropped, latest_gps_fix_valid, lat, lon,
         latest_gps_speed_valid, gps_hundredths / 100U,
         gps_hundredths % 100U, vehicle_hundredths / 100U,
         vehicle_hundredths % 100U,
@@ -1929,14 +2029,98 @@ static void SD_LogSnapshot(void)
   }
   else
   {
+    SD_CANLogClose();
     sd_ready = 0U;
     SetError(ERROR_SD, 1U);
   }
 }
 
+static FRESULT SD_CANLogOpen(void)
+{
+  static const char path[] = "0:/CANV2.CSV";
+  static const char header[] =
+      "rx_tick_ms,sequence,can_id,can_hw_timestamp,can_filter_match_index,"
+      "extended,rtr,dlc,data,"
+      "queue_dropped_total\r\n";
+  UINT written = 0U;
+
+  if (can_log_file_open != 0U) return FR_OK;
+
+  FRESULT result =
+      f_open(&can_log_file, path, FA_OPEN_ALWAYS | FA_WRITE);
+  if ((result == FR_OK) && (f_size(&can_log_file) == 0U))
+    result = f_write(&can_log_file, header, sizeof(header) - 1U, &written);
+  if (result == FR_OK)
+    result = f_lseek(&can_log_file, f_size(&can_log_file));
+
+  if (result == FR_OK)
+  {
+    can_log_file_open = 1U;
+    can_log_last_sync_ms = HAL_GetTick();
+  }
+  else
+  {
+    (void)f_close(&can_log_file);
+  }
+  return result;
+}
+
+static void SD_CANLogClose(void)
+{
+  if (can_log_file_open != 0U)
+  {
+    (void)f_sync(&can_log_file);
+    (void)f_close(&can_log_file);
+    can_log_file_open = 0U;
+  }
+}
+
+static FRESULT SD_CANLogTask(void)
+{
+  if (SD_CANLogOpen() != FR_OK) return FR_DISK_ERR;
+
+  uint32_t rows_written = 0U;
+  CAN_Snapshot_t frame;
+  while ((rows_written < CAN_LOG_ROWS_PER_TASK) && CAN_QueuePop(&frame))
+  {
+    char hex[17] = {0};
+    for (uint8_t i = 0U; i < frame.dlc; i++)
+      (void)snprintf(&hex[i * 2U], 3U, "%02X", frame.data[i]);
+
+    if (f_printf(&can_log_file,
+                 "%lu,%lu,0x%lX,%lu,%lu,%u,%u,%u,%s,%lu\r\n",
+                 frame.tick_ms, frame.count, frame.id, frame.hw_timestamp,
+                 frame.filter_match_index, frame.extended,
+                 frame.remote, frame.dlc, hex, frame.dropped) < 0)
+    {
+      SD_CANLogClose();
+      return FR_DISK_ERR;
+    }
+    rows_written++;
+  }
+
+  uint32_t now = HAL_GetTick();
+  if ((now - can_log_last_sync_ms) >= CAN_LOG_SYNC_PERIOD_MS)
+  {
+    if (f_sync(&can_log_file) != FR_OK)
+    {
+      SD_CANLogClose();
+      return FR_DISK_ERR;
+    }
+    can_log_last_sync_ms = now;
+  }
+
+  if (rows_written != 0U)
+    sd_led_until = now + ACTIVITY_PULSE_MS;
+  return FR_OK;
+}
+
 static void SD_Task(void)
 {
-  /* Mount on insertion, retry failures, and log once per second when enabled. */
+  /*
+   * The compact CAN file is kept open and drained in bounded batches. The
+   * larger GPS/IMU status row remains a one-second snapshot in TELV2.CSV.
+   */
   static uint32_t last_log_ms;
   uint32_t now = HAL_GetTick();
   if (sd_ready == 0U)
@@ -1948,15 +2132,35 @@ static void SD_Task(void)
     {
       sd_ready = 1U;
       SetError(ERROR_SD, 0U);
-      if (sd_logging_enabled != 0U) SD_LogSnapshot();
+      if (sd_logging_enabled != 0U)
+      {
+        SD_LogSnapshot();
+        if ((sd_ready != 0U) && (SD_CANLogTask() != FR_OK))
+        {
+          sd_ready = 0U;
+          SetError(ERROR_SD, 1U);
+        }
+      }
     }
     else SetError(ERROR_SD, 1U);
   }
-  else if ((sd_logging_enabled != 0U) &&
-           ((now - last_log_ms) >= TELEMETRY_PERIOD_MS))
+  else if (sd_logging_enabled != 0U)
   {
-    last_log_ms = now;
-    SD_LogSnapshot();
+    if (SD_CANLogTask() != FR_OK)
+    {
+      sd_ready = 0U;
+      SetError(ERROR_SD, 1U);
+      return;
+    }
+    if ((now - last_log_ms) >= TELEMETRY_PERIOD_MS)
+    {
+      last_log_ms = now;
+      SD_LogSnapshot();
+    }
+  }
+  else
+  {
+    SD_CANLogClose();
   }
 }
 
@@ -2196,7 +2400,8 @@ static void GPS_UpdateNavFromSentence(const char *sentence)
 
   TelemetryDateTime_t gps_date_time = {0};
   if (GPS_ParseDateTimeUtc(sentence, &gps_date_time) &&
-      ((gps_rtc_check_count == 0U) ||
+      ((gps_rtc_force_check != 0U) ||
+       (gps_rtc_check_count == 0U) ||
        ((now - gps_rtc_last_check_ms) >= GPS_RTC_SYNC_PERIOD_MS)))
   {
     TelemetryDateTime_t rtc_date_time = {0};
@@ -2223,6 +2428,7 @@ static void GPS_UpdateNavFromSentence(const char *sentence)
         gps_rtc_check_count = check_number;
         gps_rtc_sync_count++;
         gps_rtc_sync_valid = 1U;
+        gps_rtc_force_check = 0U;
         gps_rtc_last_drift_seconds = 0L;
         rtc_time_source = "GPS_UTC";
         printf("[GPS RTC] set PCF85263A to %s UTC check=%lu set=%lu\r\n",
@@ -2240,6 +2446,7 @@ static void GPS_UpdateNavFromSentence(const char *sentence)
       gps_rtc_last_check_ms = now;
       gps_rtc_check_count = check_number;
       gps_rtc_sync_valid = 1U;
+      gps_rtc_force_check = 0U;
       rtc_time_source = "GPS_UTC";
       printf("[GPS RTC] PCF85263A verified against %s UTC drift_s=%ld check=%lu\r\n",
              gps_time_text, (long)gps_rtc_last_drift_seconds,
@@ -2425,6 +2632,7 @@ static void ESP32_ExecuteCommand(const char *id, const char *verb)
   {
     if (sd_ready != 0U)
     {
+      CAN_QueueReset();
       sd_logging_enabled = 1U;
       ESP32_QueueResponse(id, "OK", "LOG_STARTED");
     }
@@ -2435,6 +2643,8 @@ static void ESP32_ExecuteCommand(const char *id, const char *verb)
   if (strcmp(verb, "STOP_LOG") == 0)
   {
     sd_logging_enabled = 0U;
+    SD_CANLogClose();
+    CAN_QueueReset();
     ESP32_QueueResponse(id, "OK", "LOG_STOPPED");
     return;
   }
@@ -2527,26 +2737,27 @@ static void ESP32_ExecuteCommand(const char *id, const char *verb)
     }
 
     /*
-     * App time takes effect immediately.  If GPS already established UTC,
-     * delay its next drift correction for a full synchronization interval so
-     * the app value is not overwritten by the next RMC sentence.
+     * SET_RTC is a UTC command. Mark it unverified and force the next valid
+     * RMC sentence to compare/correct it immediately. This prevents a phone's
+     * accidentally supplied local wall-clock value from remaining for an hour.
      */
-    rtc_time_source = "APP";
+    rtc_time_source = "APP_UTC_UNVERIFIED";
     gps_rtc_sync_valid = 0U;
+    gps_rtc_force_check = 1U;
     gps_rtc_last_drift_seconds = 0L;
-    if (gps_rtc_check_count != 0U) gps_rtc_last_check_ms = HAL_GetTick();
 
     if (TelemetryRTC_Read(&readback) != 0U)
     {
       TelemetryDateTime_Format(&readback, readback_text, sizeof(readback_text));
-      printf("[ESP32 RTC] SET_RTC applied and read back: %s\r\n", readback_text);
+      printf("[ESP32 RTC] SET_RTC UTC applied and read back: %s; awaiting GPS verification\r\n",
+             readback_text);
     }
 #if ENABLE_EXTERNAL_PCF85263A_RTC && ENABLE_STM32_INTERNAL_RTC
-    ESP32_QueueResponse(id, "OK", "RTC_SET_INTERNAL_AND_PCF85263A");
+    ESP32_QueueResponse(id, "OK", "RTC_UTC_SET_BOTH_GPS_VERIFY_PENDING");
 #elif ENABLE_EXTERNAL_PCF85263A_RTC
-    ESP32_QueueResponse(id, "OK", "RTC_SET_PCF85263A");
+    ESP32_QueueResponse(id, "OK", "RTC_UTC_SET_PCF85263A_GPS_VERIFY_PENDING");
 #else
-    ESP32_QueueResponse(id, "OK", "RTC_SET_INTERNAL");
+    ESP32_QueueResponse(id, "OK", "RTC_UTC_SET_INTERNAL_GPS_VERIFY_PENDING");
 #endif
     return;
   }
@@ -2645,6 +2856,8 @@ static void ESP32_Task(void)
   uint8_t sending_response;
   TelemetryDateTime_t date_time = {0};
   char rtc_text[24];
+  char gps_lat[20];
+  char gps_lon[20];
 
   if ((now - last_ms) < TELEMETRY_PERIOD_MS) return;
   last_ms = now;
@@ -2666,15 +2879,19 @@ static void ESP32_Task(void)
     uint32_t imu_hundredths =
         (uint32_t)(latest_imu_speed_mph * 100.0f + 0.5f);
     TelemetryDateTime_Format(&date_time, rtc_text, sizeof(rtc_text));
+    FormatSignedFixed6(latest_gps_lat_deg, gps_lat, sizeof(gps_lat));
+    FormatSignedFixed6(latest_gps_lon_deg, gps_lon, sizeof(gps_lon));
     (void)snprintf((char *)esp32_tx_frame, sizeof(esp32_tx_frame),
-        "$TEL,seq=%lu,ms=%lu,rtc=%s,rtc_valid=%u,rtc_source=%s,"
+        "$TEL,seq=%lu,ms=%lu,rtc=%s,rtc_basis=UTC,rtc_valid=%u,rtc_source=%s,"
         "speed_mph=%lu.%02lu,speed_source=%s,can_rx=%lu,gps_valid=%u,"
+        "gps_lat_deg=%s,gps_lon_deg=%s,gps_fix_age_ms=%lu,"
         "imu_speed_mph=%lu.%02lu,imu_forward_accel_mg=%ld,"
         "imu_ready=%u,imu_calibrated=%u,imu_mount_valid=%u,imu_valid=%u,imu_dynamic_g_mg=%lu,"
         "imu_peak_g_mg=%lu,rtc_sync_valid=%u,rtc_drift_s=%ld,logging=%u,sd=%s\r\n",
         esp32_sequence++, now, rtc_text, rtc_valid, rtc_time_source,
         vehicle_hundredths / 100U, vehicle_hundredths % 100U,
-        latest_vehicle_speed_source, can_latest.count, latest_gps_fix_valid,
+        latest_vehicle_speed_source, can_rx_count, latest_gps_fix_valid,
+        gps_lat, gps_lon, latest_gps_fix_valid ? (now - latest_gps_fix_ms) : 0U,
         imu_hundredths / 100U, imu_hundredths % 100U,
         (long)imu_telemetry.forward_accel_mg,
         imu_ready, imu_calibrated, imu_mount_valid, imu_telemetry.valid,
@@ -2784,7 +3001,7 @@ static void RS232_Task(void)
       "IMU_G,VALID=%u,CALIBRATED=%u,MOUNT_VALID=%u,FORWARD_G=%s,LINEAR_X_G=%s,"
       "LINEAR_Y_G=%s,LINEAR_Z_G=%s,TOTAL_G=%s,DYNAMIC_G=%s,"
       "PEAK_BOOT_G=%s,AGE_MS=%lu\r\n"
-      "TL_TIM,%s,RTC_SOURCE=%s,RTC_SYNC_VALID=%u,RTC_DRIFT_S=%ld,UPTIME_MS=%lu\r\n"
+      "TL_TIM,%s,RTC_BASIS=UTC,RTC_SOURCE=%s,RTC_SYNC_VALID=%u,RTC_DRIFT_S=%ld,UPTIME_MS=%lu\r\n"
       "TL_UPT,%s\r\nVWXYZ\r\n",
       imu_speed_hundredths / 100U, imu_speed_hundredths % 100U,
       gps_speed_hundredths / 100U, gps_speed_hundredths % 100U,
@@ -2940,7 +3157,7 @@ int main(void)
   /*
    * Application startup begins after CubeMX has configured the clocks and
    * enabled peripheral registers. The external PCF85263A calendar is set and
-   * checked from valid GPS UTC, or can be set by SET_RTC from the app. The
+   * checked from valid GPS UTC, or can be set in UTC by SET_RTC from the app. The
    * enabled BMI270 is initialized and calibrated at rest before sampling.
    */
   HAL_GPIO_WritePin(GPIOD, Green_LED11_Pin | Red_LED10_Pin | Yellow_LED9_Pin |
@@ -2956,7 +3173,7 @@ int main(void)
   /* 0xFF clocks bytes out of the u-blox GPS without sending a command. */
   memset(gps_tx, 0xFF, sizeof(gps_tx));
   setvbuf(stdout, NULL, _IONBF, 0);
-  printf("\r\n[BOOT] telemetry_adv_v1 started; RTC=PCF85263A; GPS UTC set/hourly drift check; BMI270 boot calibration; BME disabled\r\n");
+  printf("\r\n[BOOT] telemetry_adv_v2 started; atomic CAN queue; RTC=PCF85263A UTC; GPS UTC set/minute drift check; BMI270 boot calibration; BME disabled\r\n");
   printf("[LED] Y6=SD Y7=CAN Y8=RS232 Y9=ESP32 R10=error G11=heartbeat Y5=GPS\r\n");
   if (CAN_StartListenAll() != HAL_OK)
   {

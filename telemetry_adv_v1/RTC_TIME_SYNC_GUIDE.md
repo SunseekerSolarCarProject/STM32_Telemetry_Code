@@ -1,30 +1,20 @@
-# STM32 RTC Time Synchronization Through GPS and ESP32 BLE
+# External RTC Time Synchronization Through GPS and ESP32 BLE
 
 ## Purpose
 
-This design lets either GPS UTC or the phone/telemetry application set the
-STM32F437 internal RTC. GPS time comes from a checksum-valid, active NMEA RMC
-sentence. App time travels through the ESP32 BLE/SPI bridge. It is intended
-for the current board, where the STM32 RTC has no VBAT supply and therefore
-cannot retain the calendar after complete power removal.
+This design uses the external PCF85263A as the telemetry board's primary RTC.
+GPS time comes from a checksum-valid, active NMEA RMC sentence and is used to
+set and periodically verify the external calendar. App time travels through
+the ESP32 BLE/SPI bridge and can be used when GPS is unavailable.
 
-The same `SET_RTC` command is also connected to the feature-gated external
-PCF85263A path. When that device is enabled later, one valid command updates
-both the internal STM32 RTC and the external PCF85263A.
+## Important behavior
 
-## Important behavior without VBAT
-
-- Complete board power loss resets the STM32 backup domain and loses the time.
+- The PCF85263A retains time across main-board power loss only when its backup
+  supply and 32.768 kHz crystal are present and working.
 - The first valid GPS RMC after startup automatically sets the RTC. The app can
   send `SET_RTC` when a GPS fix is unavailable or a manual override is wanted.
-- A software reset may preserve the RTC while the backup domain still has
-  power, but the application should not depend on this.
-- The internal RTC runs from the board's 16 MHz HSE crystal through the STM32
-  `HSE/16` RTC selection. The resulting 1 MHz RTC input is divided by
-  `(124 + 1) * (7999 + 1)` to produce 1 Hz.
-- HSE gives better stability than LSI, but it is not a substitute for the
-  external battery-backed RTC. HSE also stops in STM32 Stop/Standby modes.
-- GPS resynchronizes the RTC once per hour to correct crystal drift.
+- GPS checks the RTC once per hour. A write occurs only when the clock is
+  unreadable or differs from GPS by more than two seconds.
 - Use UTC for app commands because GPS time is UTC and the command contains no
   time-zone field.
 
@@ -33,9 +23,9 @@ both the internal STM32 RTC and the external PCF85263A.
 The STM32 accepts time only from an RMC sentence that passes its NMEA checksum,
 has status `A` (active), and contains valid `hhmmss` and `ddmmyy` fields.
 
-- The first accepted RMC after boot sets the internal RTC immediately.
-- Further valid RMC sentences correct the RTC once every 3,600,000 ms (one
-  hour), avoiding a calendar write for every GPS sentence.
+- The first accepted RMC after boot sets the PCF85263A immediately.
+- Further valid RMC sentences trigger a comparison every 3,600,000 ms (one
+  hour). Drift of -2 through +2 seconds is accepted without rewriting the RTC.
 - GPS provides whole UTC seconds. The fractional field is ignored because an
   NMEA sentence arrives after the precise second boundary. A future GPS PPS
   interrupt can provide sub-second alignment if needed.
@@ -86,11 +76,10 @@ ESP32
 
 STM32
     -> validates the full calendar
-    -> writes the STM32 internal RTC
+    -> writes the external PCF85263A
     -> reads the RTC back
     -> queues one of:
-       $RSP,<n>,OK,RTC_SET_INTERNAL
-       $RSP,<n>,OK,RTC_SET_INTERNAL_AND_PCF85263A
+       $RSP,<n>,OK,RTC_SET_PCF85263A
        $RSP,<n>,ERR,<reason>
 
 ESP32
@@ -107,21 +96,23 @@ Normal STM32-to-ESP32 status frames are fixed 768-byte, zero-padded ASCII
 frames. A typical frame begins:
 
 ```text
-$TEL,seq=42,ms=73117,rtc=2026-07-12T18:45:31,rtc_valid=1,rtc_source=GPS_UTC,...
+$TEL,seq=42,ms=73117,rtc=2026-07-12T18:45:31,rtc_valid=1,rtc_source=GPS_UTC,...,rtc_sync_valid=1,rtc_drift_s=0,...
 ```
 
-RS232/SWV also reports the active internal RTC:
+RS232/SWV also reports the active external RTC:
 
 ```text
-TL_TIM,2026-07-12T18:45:31,RTC_SOURCE=GPS_UTC,UPTIME_MS=73117
+TL_TIM,2026-07-12T18:45:31,RTC_SOURCE=GPS_UTC,RTC_SYNC_VALID=1,RTC_DRIFT_S=0,UPTIME_MS=73117
 ```
 
-`RTC_SOURCE`/`rtc_source` is `DEFAULT`, `APP`, `GPS_UTC`, or `PRESERVED` after
-a reset that did not remove backup-domain power. SWV also reports the HSE
-divider and the number of successful GPS synchronizations:
+`RTC_SOURCE`/`rtc_source` is `UNSYNCED`, `APP`, `GPS_UTC`, or `PRESERVED` when
+the PCF85263A retained a valid calendar. `RTC_SYNC_VALID=1` means the most
+recent scheduled comparison with GPS succeeded. `RTC_DRIFT_S` is external RTC
+time minus GPS time, in whole seconds, at that comparison. SWV also reports
+the number of GPS checks and actual RTC writes:
 
 ```text
-[STM32 RTC] 2026-07-12T18:45:31 clock=HSE_DIV16 time_source=GPS_UTC gps_syncs=1 uptime=0:00:01:13.117
+[RTC] 2026-07-12T18:45:31 device=PCF85263A time_source=GPS_UTC gps_sync_valid=1 drift_s=0 gps_checks=1 gps_sets=1 uptime=0:00:01:13.117
 ```
 
 The STM32 SWV console reports a successful set/readback as:
@@ -145,22 +136,19 @@ The STM32 SWV console reports a successful set/readback as:
 Both projects must use the same frame size. Changing only one side will break
 the link.
 
-## External PCF85263A support
+## External PCF85263A configuration
 
-The disabled STM32 extension is written specifically for the PCF85263A. It
+The active RTC driver is written specifically for the PCF85263A. It
 uses the 7-bit I2C address `0x51`, selects RTC/24-hour mode, and follows the
 device's required coherent set sequence: STOP, clear prescaler, write registers
 `0x00` through `0x07`, then release STOP.
 
-Enable it in STM32 `Core/Src/main.c` only after the I2C bus, 32.768 kHz crystal,
-and backup supply have been validated on hardware:
+The current STM32 `Core/Src/main.c` selection is:
 
 ```c
 #define ENABLE_EXTERNAL_PCF85263A_RTC 1U
+#define ENABLE_STM32_INTERNAL_RTC 0U
 ```
-
-With the switch at `0U`, `SET_RTC` updates only the internal STM32 RTC and no
-external-RTC I2C traffic occurs.
 
 ## Application implementation recommendation
 
@@ -180,7 +168,7 @@ On each BLE connection after board power-up:
 2. Format it exactly as `SET_RTC,YYYY-MM-DD,HH:MM:SS`.
 3. Write it to the control characteristic.
 4. Treat `ACK,SET_RTC,queued=1` as pending, not complete.
-5. Wait for `$RSP,...,OK,RTC_SET_INTERNAL` or the dual-RTC success response.
+5. Wait for `$RSP,...,OK,RTC_SET_PCF85263A`.
 6. Optionally read status and confirm `rtc=` or monitor `TL_TIM`.
 
 Do not restore an old timestamp from ESP32 NVS after power-up. Without an
@@ -194,12 +182,11 @@ Possible responses include:
 ERR,BAD_RTC
 $RSP,<n>,ERR,BAD_RTC_FORMAT
 $RSP,<n>,ERR,RTC_RANGE_INVALID
-$RSP,<n>,ERR,STM32_RTC_SET_FAILED
-$RSP,<n>,ERR,PCF85263A_SET_FAILED_INTERNAL_OK
+$RSP,<n>,ERR,RTC_SET_FAILED
 ```
 
-`PCF85263A_SET_FAILED_INTERNAL_OK` means the STM32 internal time was updated but
-the enabled external RTC write failed.
+`RTC_SET_FAILED` means the active RTC could not be written. Check I2C1, address
+`0x51`, device power, common ground, and the PCF85263A oscillator components.
 
 ## Build commands and outputs
 
@@ -234,5 +221,8 @@ binary STM32 protocol or the new 768-byte ESP32 ASCII protocol unmatched.
 6. Confirm `TL_TIM` advances once per second and reports `RTC_SOURCE=APP`.
 7. Allow a valid GPS RMC and confirm `[GPS RTC] ... UTC` plus
    `RTC_SOURCE=GPS_UTC` after the initial GPS synchronization.
-8. Remove all board power, restore it, and verify the time resets.
-9. Confirm either the app or the first new GPS fix restores UTC.
+8. Leave GPS running until a later scheduled comparison and confirm
+   `RTC_SYNC_VALID=1`; `RTC_DRIFT_S` should be within +/-2 unless a correction
+   was required, in which case the RTC is rewritten and drift reports zero.
+9. Remove main-board power while maintaining the RTC backup supply, restore
+   power, and confirm `RTC_SOURCE=PRESERVED` before the first GPS update.
