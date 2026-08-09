@@ -1,5 +1,0 @@
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/esp32_testing/Core/Src/stm32f4xx_hal_msp.c:63:6:HAL_MspInit	1
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/esp32_testing/Core/Src/stm32f4xx_hal_msp.c:86:6:HAL_SPI_MspInit	2
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/esp32_testing/Core/Src/stm32f4xx_hal_msp.c:127:6:HAL_SPI_MspDeInit	2
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/esp32_testing/Core/Src/stm32f4xx_hal_msp.c:159:6:HAL_PCD_MspInit	2
-C:/Users/aweso/Downloads/sunseeker_projects_workspace/Programming/Stm32_code/esp32_testing/Core/Src/stm32f4xx_hal_msp.c:196:6:HAL_PCD_MspDeInit	2
