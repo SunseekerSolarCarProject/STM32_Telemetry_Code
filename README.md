@@ -8,17 +8,20 @@ STM32CubeMX/CubeIDE project.
 
 ### 1. Get the code
 
-Either clone the repository:
+On this repository's GitHub page, select **Code > Download ZIP**. Extract the
+entire ZIP to a normal working directory before opening STM32CubeIDE.
+
+Because this is a public repository, no GitHub account, username, or sign-in is
+required. If you use Git, select **Code**, copy the HTTPS URL, and run:
 
 ```powershell
-git clone --depth 1 https://github.com/CagedMotion/STM32_Telemetry_Code.git
+git clone <repository-url>
 ```
 
-The shallow clone skips old generated binaries in the repository history. If
-you need the full commit history, omit `--depth 1`. Alternatively, select
-**Code > Download ZIP** on GitHub and extract the ZIP. Keep the
-repository's directory structure intact; the CubeIDE projects link to source
-files one directory above their `STM32CubeIDE` folders.
+Do not move an individual project or open files directly from inside the ZIP.
+Whether you download or clone the repository, keep its directory structure
+intact because each CubeIDE project links to source files one directory above
+its `STM32CubeIDE` folder.
 
 ### 2. Choose a project
 
